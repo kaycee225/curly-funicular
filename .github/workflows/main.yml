@@ -236,7 +236,7 @@ jobs:
           token = os.environ.get('GOFILE_API_TOKEN')
           root_dir = os.environ.get('FOLDER_PATH')
 
-          if not token or token == 'YOUR_GOFILE_TOKEN_HERE':
+          if not token or token == 'NkEP9nPmjC5bYQB7ZabZKnsUEBi7ww85':
               print("❌ Error: Gofile API token not set.")
               sys.exit(1)
 
