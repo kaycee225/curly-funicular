@@ -14,179 +14,80 @@ build_script:
   - sh: |
       echo "📥 Downloading torrents with aria2..."
       mkdir -p downloads 
-      
-      cat << 'EOF' > download.py
-      import os, subprocess, glob, requests
-
-      save_path = "downloads"
-      os.makedirs(save_path, exist_ok=True)
-
-      local_torrents = glob.glob("*.torrent") + glob.glob("**/*.torrent", recursive=True)
-      for tor in local_torrents:
-          print(f"📥 Processing local repository torrent: {tor}", flush=True)
-          subprocess.run(["aria2c", "--dir", save_path, "--seed-time=0", tor])
-
-      link_url = "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"
+      python3 -c 'import os, subprocess, glob, requests; p="downloads"; os.makedirs(p, exist_ok=True); [subprocess.run(["aria2c", "--dir", p, "--seed-time=0", t]) for t in glob.glob("*.torrent") + glob.glob("**/*.torrent", recursive=True)]; [print(f"📥 Processing local torrent: {t}") for t in glob.glob("*.torrent") + glob.glob("**/*.torrent", recursive=True)]'
+      python3 -c 'import requests, subprocess; url="https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"; 
       try:
-          ks = requests.get(link_url, timeout=10).text
-          if "STOP.ALL.TORRENTS" not in ks:
-              for link in ks.splitlines():
-                  link = link.strip()
-                  if link and not link.startswith('#') and not link.endswith(' NO'):
-                      print(f"📥 Downloading dynamic link via aria2: {link[:60]}...", flush=True)
-                      subprocess.run(["aria2c", "--dir", save_path, "--seed-time=0", link])
-      except Exception as e:
-          print(f"⚠️ Failed to fetch dynamic links: {e}")
-      EOF
-      python3 download.py
+        ks = requests.get(url, timeout=10).text
+        if "STOP.ALL.TORRENTS" not in ks:
+          [subprocess.run(["aria2c", "--dir", "downloads", "--seed-time=0", l.strip()]) for l in ks.splitlines() if l.strip() and not l.startswith("#") and not l.endswith(" NO")]
+      except Exception as e: print(e)'
 
       echo "📦 Running Smart Auto-Group Zipping & Splitting (10 GB limit)..."
-      cat << 'EOF' > zip_files.py
+      python3 -c '
       import os, shutil, subprocess, re
       from collections import defaultdict
-
-      folder = "downloads"
-      video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-      media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-      max_bytes = 10000 * 1024 * 1024
-
-      def get_dir_size(p):
-          return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-
-      def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
-          group_dir = os.path.join(base_dir, group_name)
-          os.makedirs(group_dir, exist_ok=True)
-          
-          files_to_move = list(file_paths)
-          for p in file_paths:
-              base_stem = os.path.splitext(p)[0]
-              for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
-                  sub_file = base_stem + sub_ext
-                  if os.path.exists(sub_file) and sub_file not in files_to_move:
-                      files_to_move.append(sub_file)
-
-          for p in files_to_move:
-              dst = os.path.join(group_dir, os.path.basename(p))
-              if p != dst and not os.path.exists(dst):
-                  shutil.move(p, dst)
-          
-          folder_size = get_dir_size(group_dir)
-          zip_name = f"{group_name}.zip"
-          orig = os.getcwd()
-          os.chdir(base_dir)
-          cmd = ["7z", "a", "-mx0", zip_name, group_name]
-          if folder_size > max_bytes_limit:
-              cmd.insert(2, "-v10000m")
-          subprocess.run(cmd, check=True)
-          os.chdir(orig)
-          shutil.rmtree(group_dir)
-
-      if os.path.exists(folder):
-          for item in os.listdir(folder):
-              item_path = os.path.join(folder, item)
-              if os.path.isdir(item_path):
-                  vids = [
-                      os.path.join(r, f) for r, _, files in os.walk(item_path)
-                      for f in files if f.lower().endswith(video_ext)
-                  ]
-                  if len(vids) > 3:
-                      print(f"📦 RULE 4 (Folder > 3 videos): Zipping {item}")
-                      folder_size = get_dir_size(item_path)
-                      orig = os.getcwd()
-                      os.chdir(folder)
-                      zip_name = f"{item}.zip"
-                      cmd = ["7z", "a", "-mx0", zip_name, item]
-                      if folder_size > max_bytes:
-                          cmd.insert(2, "-v10000m")
-                      subprocess.run(cmd, check=True)
-                      os.chdir(orig)
-                      shutil.rmtree(item_path)
-
-      remaining_videos = []
-      for r, _, files in os.walk(folder):
-          for f in files:
-              if f.lower().endswith(video_ext):
-                  remaining_videos.append(os.path.join(r, f))
-
-      series_regex = re.compile(r'(?i)^(.*?)[.\s_-]+S(\d{1,2})(?:[EX\-]|\b)')
-      def clean_series_name(raw_name):
-          return re.sub(r'(?i)(www\.[^\s]+\s*-\s*|^\[.*?\]\s*)', '', raw_name).strip('. -_')
-
-      series_groups = defaultdict(list)
-      for vid_path in remaining_videos:
-          vid_name = os.path.basename(vid_path)
-          parent_name = os.path.basename(os.path.dirname(vid_path))
-          match = series_regex.search(vid_name) or series_regex.search(parent_name)
-          if match:
-              s_name = clean_series_name(match.group(1))
-              s_num = match.group(2)
-              group_key = f"{s_name.lower()}_S{s_num}"
-              series_groups[group_key].append(vid_path)
-
-      for group_key, vids in series_groups.items():
-          if len(vids) > 3:
-              first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-              print(f"📦 RULE 2 (Series > 3 eps): Grouping {len(vids)} episodes into {first_stem}.zip")
-              create_7z_group(first_stem, vids, folder, max_bytes)
+      f="downloads"; ve=(".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v"); me=ve+(".srt", ".ass", ".vtt", ".sub"); mb=10000*1024*1024
+      def gsz(p): return sum(os.path.getsize(os.path.join(dp, fn)) for dp, _, fn in os.walk(p))
+      def c7z(gn, fps, bd, mbl):
+          gd=os.path.join(bd, gn); os.makedirs(gd, exist_ok=True); ftm=list(fps)
+          for p in fps:
+              bs=os.path.splitext(p)[0]
+              for se in (".srt", ".ass", ".vtt", ".sub"):
+                  sf=bs+se
+                  if os.path.exists(sf) and sf not in ftm: ftm.append(sf)
+          for p in ftm:
+              dst=os.path.join(gd, os.path.basename(p))
+              if p!=dst and not os.path.exists(dst): shutil.move(p, dst)
+          fsz=gsz(gd); zn=gn+".zip"; o=os.getcwd(); os.chdir(bd)
+          cmd=["7z", "a", "-mx0", zn, gn]
+          if fsz>mbl: cmd.insert(2, "-v10000m")
+          subprocess.run(cmd, check=True); os.chdir(o); shutil.rmtree(gd)
+      if os.path.exists(f):
+          for item in os.listdir(f):
+              ip=os.path.join(f, item)
+              if os.path.isdir(ip):
+                  vids=[os.path.join(r, fn) for r, _, files in os.walk(ip) for fn in files if fn.lower().endswith(ve)]
+                  if len(vids)>3:
+                      fsz=gsz(ip); o=os.getcwd(); os.chdir(f); cmd=["7z", "a", "-mx0", item+".zip", item]
+                      if fsz>mb: cmd.insert(2, "-v10000m")
+                      subprocess.run(cmd, check=True); os.chdir(o); shutil.rmtree(ip)
+      rv=[os.path.join(r, fn) for r, _, files in os.walk(f) for fn in files if fn.lower().endswith(ve)]
+      sr=re.compile(r"(?i)^(.*?)[.\s_-]+S(\d{1,2})(?:[EX\-]|\b)")
+      def csn(rn): return re.sub(r"(?i)(www\.[^\s]+\s*-\s*|^\[.*?\]\s*)", "", rn).strip(". -_")
+      sg=defaultdict(list)
+      for vp in rv:
+          m=sr.search(os.path.basename(vp)) or sr.search(os.path.basename(os.path.dirname(vp)))
+          if m: sg[f"{csn(m.group(1)).lower()}_S{m.group(2)}"].append(vp)
+      for gk, vids in sg.items():
+          if len(vids)>3:
+              fs=os.path.splitext(os.path.basename(vids[0]))[0]
+              c7z(fs, vids, f, mb)
               for v in vids:
-                  if v in remaining_videos:
-                      remaining_videos.remove(v)
-
-      if len(remaining_videos) > 3:
-          first_stem = os.path.splitext(os.path.basename(remaining_videos[0]))[0]
-          print(f"📦 RULE 3 (Leftovers > 3 videos): Grouping {len(remaining_videos)} videos into {first_stem}.zip")
-          create_7z_group(first_stem, remaining_videos, folder, max_bytes)
-          remaining_videos.clear()
-
-      for r, dirs, files in os.walk(folder, topdown=False):
-          if r == folder: continue
-          for f in files:
-              if f.lower().endswith(media_ext):
-                  src = os.path.join(r, f)
-                  dst = os.path.join(folder, f)
-                  if not os.path.exists(dst): 
-                      shutil.move(src, dst)
+                  if v in rv: rv.remove(v)
+      if len(rv)>3:
+          fs=os.path.splitext(os.path.basename(rv[0]))[0]
+          c7z(fs, rv, f, mb); rv.clear()
+      for r, dirs, files in os.walk(f, topdown=False):
+          if r==f: continue
+          for fn in files:
+              if fn.lower().endswith(me):
+                  src=os.path.join(r, fn); dst=os.path.join(f, fn)
+                  if not os.path.exists(dst): shutil.move(src, dst)
           shutil.rmtree(r, ignore_errors=True)
-      EOF
-      python3 zip_files.py
+      '
 
       echo "📤 Uploading files to Filemirage via Memory-Safe Curl..."
-      cat << 'EOF' > upload.py
+      python3 -c '
       import os, subprocess, requests
-
-      FILEMIRAGE_API_TOKEN = '9QQH-DGES-CWQZ-FXNV'
-      FOLDER_PATH = 'downloads'
-
-      try:
-          srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
-          SERVER = srv_res['data']['server']
-      except Exception as e:
-          print(f"Failed to fetch Filemirage server: {e}")
-          exit(1)
-
-      if os.path.exists(FOLDER_PATH):
-          for root, dirs, files in os.walk(FOLDER_PATH):
-              for filename in files:
-                  if ".!qB" in filename or ".part" in filename or filename.endswith('.torrent'):
-                      continue
-                  file_path = os.path.join(root, filename)
-                  file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                  print(f"⬆️ Uploading: {filename} ({file_size_mb:.2f} MB)")
-                  
-                  curl_cmd = [
-                      "curl", "-s", "-S", "-X", "POST",
-                      f"{SERVER}/upload.php",
-                      "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
-                      "-F", f"file=@{file_path}",
-                      "--max-time", "3600"
-                  ]
-                  
-                  result = subprocess.run(curl_cmd, capture_output=True, text=True)
-                  if result.returncode == 0:
-                      print(f"✅ Response for {filename}: {result.stdout}")
-                  else:
-                      print(f"❌ Curl Error uploading {filename}: {result.stderr}")
-      EOF
-      python3 upload.py
+      tok="9QQH-DGES-CWQZ-FXNV"; fp="downloads"
+      try: srv=requests.get("https://filemirage.com/api/servers", timeout=10).json()["data"]["server"]
+      except Exception as e: exit(1)
+      if os.path.exists(fp):
+          for root, dirs, files in os.walk(fp):
+              for fn in files:
+                  if ".!qB" in fn or ".part" in fn or fn.endswith(".torrent"): continue
+                  fpath=os.path.join(root, fn)
+                  subprocess.run(["curl", "-s", "-S", "-X", "POST", srv+"/upload.php", "-H", "Authorization: Bearer "+tok, "-F", "file=@"+fpath, "--max-time", "3600"])
+      '
 
 test: off
