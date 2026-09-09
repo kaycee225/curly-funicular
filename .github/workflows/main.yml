@@ -1,0 +1,290 @@
+name: qBittorrent & Gofile
+
+on:
+  push:
+    branches: New
+    
+  workflow_dispatch:
+
+jobs:
+  torrent-upload:
+    runs-on: ubuntu-latest
+    env:
+      GOFILE_API_TOKEN: 'NkEP9nPmjC5bYQB7ZabZKnsUEBi7ww85'
+      FOLDER_PATH: 'downloaded_files'
+      LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/5f03f01d-202f-48f2-9d69-1b26b05fb82a.txt'
+      KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/5f03f01d-202f-48f2-9d69-1b26b05fb82a.txt'
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Dependencies
+        run: sudo apt update && sudo apt install qbittorrent-nox jq curl python3 python3-requests -y
+
+      - name: Download with qBittorrent & Boxed Progress
+        run: |
+          mkdir -p "$FOLDER_PATH"
+          touch added_links.txt
+          mkdir -p ~/.config/qBittorrent
+          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
+          [LegalNotice]
+          Accepted=true
+          [Preferences]
+          WebUI\Port=8080
+          WebUI\LocalHostAuth=false
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          Queueing\QueueEnabled=true
+          Queueing\MaxActiveDownloads=10
+          Queueing\MaxActiveTorrents=25
+          EOF
+
+          qbittorrent-nox -d
+          sleep 5
+
+          python3 - << 'EOF'
+          import requests, time, os
+          from datetime import datetime
+
+          link_url = os.environ.get('LINK_FETCH_URL')
+          kill_url = os.environ.get('KILL_SWITCH_URL')
+          folder_path = os.environ.get('FOLDER_PATH')
+          absolute_save_path = os.path.abspath(folder_path)
+          added_links = set()
+          update_count = 0
+
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
+
+              if kill_url:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          break
+                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
+                      if targets:
+                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                          for t in res:
+                              if any(tg in t['name'].lower() for tg in targets if tg):
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+                  except Exception: pass
+
+              if link_url:
+                  try:
+                      page = requests.get(link_url, timeout=5).text
+                      for link in page.splitlines():
+                          link = link.strip()
+                          if link and not link.startswith('#') and link not in added_links:
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              added_links.add(link)
+                  except Exception: pass
+
+              try:
+                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                  print(f"\n" + "="*50)
+                  print(f"🔄 Progress Update #{update_count} | {timestamp}")
+                  print("-"*50)
+                  if not res:
+                      print("📥 Waiting for active torrents...")
+                      all_done = False
+                  else:
+                      all_done = True
+                      for t in res:
+                          prog = int(t.get('progress', 0) * 100)
+                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                          eta_str = fmt_eta(t.get('eta', -1))
+                          print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                          if prog < 100: all_done = False
+                  print("="*50 + "\n")
+                  if all_done and res: break
+              except Exception: pass
+              time.sleep(10)
+          EOF
+
+          pkill qbittorrent-nox || true
+          sleep 2
+
+      - name: Smart File Sorting & Splitting
+        run: |
+          python3 - << 'EOF'
+          import os, shutil, re
+          from datetime import datetime
+          from collections import defaultdict
+
+          root_dir = os.environ.get('FOLDER_PATH')
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+          max_size = 18 * 1024 * 1024 * 1024
+
+          processed_dir = "processed_staging"
+          os.makedirs(processed_dir, exist_ok=True)
+
+          # Rule 3: Populated Nested Folders (> 3 video files)
+          for item in os.listdir(root_dir):
+              item_path = os.path.join(root_dir, item)
+              if os.path.isdir(item_path):
+                  videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
+                  if len(videos) > 3:
+                      shutil.move(item_path, os.path.join(processed_dir, item))
+
+          # Gather remaining loose files
+          loose_files = []
+          for r, _, files in os.walk(root_dir):
+              if processed_dir in r: continue
+              for f in files:
+                  if f.lower().endswith(video_ext) or f.lower().endswith(sub_ext):
+                      loose_files.append(os.path.join(r, f))
+
+          season_pattern = re.compile(r'(?i)(s\d{2,}e\d{2,}|season\s*\d+|s\d{2,})')
+          series_groups = defaultdict(list)
+          movies = []
+          others = []
+          
+          vids = [f for f in loose_files if f.lower().endswith(video_ext)]
+          subs = [f for f in loose_files if f.lower().endswith(sub_ext)]
+
+          # Sort loose videos into Movies vs Series
+          for v in vids:
+              bname = os.path.basename(v)
+              match = season_pattern.search(bname)
+              if match:
+                  marker = match.group(0).lower()
+                  idx = bname.lower().find(marker)
+                  show_name = bname[:idx].strip(' .-_')
+                  series_groups[(show_name, marker)].append(v)
+              else:
+                  movies.append(v)
+
+          # Rule 2: TV Series (> 3 episodes)
+          for (show, marker), eps in series_groups.items():
+              if len(eps) > 3:
+                  eps.sort()
+                  first_ep_name = os.path.splitext(os.path.basename(eps[0]))[0]
+                  target_folder = os.path.join(processed_dir, first_ep_name)
+                  os.makedirs(target_folder, exist_ok=True)
+                  for ep in eps: shutil.move(ep, os.path.join(target_folder, os.path.basename(ep)))
+              else:
+                  others.extend(eps)
+
+          # Rule 1: Movies (Dedicated Folder)
+          for m in movies:
+              bname = os.path.splitext(os.path.basename(m))[0]
+              target_folder = os.path.join(processed_dir, bname)
+              os.makedirs(target_folder, exist_ok=True)
+              shutil.move(m, os.path.join(target_folder, os.path.basename(m)))
+              for s in subs:
+                  s_bname = os.path.splitext(os.path.basename(s))[0]
+                  if s_bname.startswith(bname) and os.path.exists(s):
+                      shutil.move(s, os.path.join(target_folder, os.path.basename(s)))
+
+          # Rule 4: Others (Date Folder)
+          if others or any(os.path.exists(s) for s in subs):
+              date_folder = datetime.now().strftime("%Y-%m-%d")
+              target_folder = os.path.join(processed_dir, date_folder)
+              os.makedirs(target_folder, exist_ok=True)
+              for o in others:
+                  if os.path.exists(o): shutil.move(o, os.path.join(target_folder, os.path.basename(o)))
+              for s in subs:
+                  if os.path.exists(s): shutil.move(s, os.path.join(target_folder, os.path.basename(s)))
+
+          # Cleanup original loose files root
+          for item in os.listdir(root_dir):
+              p = os.path.join(root_dir, item)
+              if p != processed_dir:
+                  shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
+
+          # Rule 5: 18GB Limit Splitting
+          for item in os.listdir(processed_dir):
+              folder_path = os.path.join(processed_dir, item)
+              if not os.path.isdir(folder_path): continue
+              
+              files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path)])
+              total_size = sum(os.path.getsize(f) for f in files)
+              
+              if total_size > max_size:
+                  part, current_size = 1, 0
+                  current_folder = f"{folder_path}_Part{part}"
+                  os.makedirs(current_folder, exist_ok=True)
+                  for f in files:
+                      f_size = os.path.getsize(f)
+                      if current_size + f_size > max_size and current_size > 0:
+                          part += 1
+                          current_folder = f"{folder_path}_Part{part}"
+                          os.makedirs(current_folder, exist_ok=True)
+                          current_size = 0
+                      shutil.move(f, os.path.join(current_folder, os.path.basename(f)))
+                      current_size += f_size
+                  os.rmdir(folder_path)
+
+          # Move back to root_dir
+          for item in os.listdir(processed_dir):
+              shutil.move(os.path.join(processed_dir, item), os.path.join(root_dir, item))
+          os.rmdir(processed_dir)
+          EOF
+
+      - name: Upload Folders to Gofile
+        run: |
+          python3 - << 'EOF'
+          import os, sys, requests
+
+          token = os.environ.get('GOFILE_API_TOKEN')
+          root_dir = os.environ.get('FOLDER_PATH')
+
+          if not token or token == 'YOUR_GOFILE_TOKEN_HERE':
+              print("❌ Error: Gofile API token not set.")
+              sys.exit(1)
+
+          # Get Account Root Folder ID
+          print("Fetching Gofile account details...")
+          acc_res = requests.get('https://api.gofile.io/accounts/get', headers={'Authorization': f'Bearer {token}'}).json()
+          if acc_res.get('status') != 'ok':
+              print(f"❌ Error fetching account details: {acc_res}")
+              sys.exit(1)
+          
+          root_folder_id = acc_res['data']['rootFolder']
+
+          # Get optimal upload server
+          srv_res = requests.get('https://api.gofile.io/servers').json()
+          server = srv_res['data']['servers'][0]['name']
+          upload_url = f"https://{server}.gofile.io/contents/uploadfile"
+          print(f"🌐 Optimal Server selected: {server}")
+
+          for item in os.listdir(root_dir):
+              item_path = os.path.join(root_dir, item)
+              if os.path.isdir(item_path):
+                  print(f"\n📁 Creating folder on Gofile: {item}")
+                  cf_res = requests.post(
+                      'https://api.gofile.io/contents/createFolder',
+                      headers={'Authorization': f'Bearer {token}'},
+                      json={'parentFolderId': root_folder_id, 'folderName': item}
+                  ).json()
+                  
+                  if cf_res.get('status') != 'ok':
+                      print(f"❌ Failed to create folder {item}: {cf_res}")
+                      continue
+                      
+                  folder_id = cf_res['data']['id']
+                  
+                  # Upload files into the created folder
+                  for f in os.listdir(item_path):
+                      file_path = os.path.join(item_path, f)
+                      if os.path.isfile(file_path):
+                          print(f"📤 Uploading: {f}...")
+                          with open(file_path, 'rb') as file_data:
+                              res = requests.post(
+                                  upload_url,
+                                  files={'file': file_data},
+                                  data={'token': token, 'folderId': folder_id}
+                              ).json()
+                              
+                              if res.get('status') == 'ok':
+                                  print(f"✅ Success")
+                              else:
+                                  print(f"❌ Failed: {res}")
+          EOF
