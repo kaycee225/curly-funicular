@@ -12,21 +12,20 @@ install:
 
 build_script:
   - sh: |
-      echo "📥 Downloading torrents with aria2 (Local repo .torrent files + Dynamic links)..."
+      echo "📥 Downloading torrents with aria2..."
       mkdir -p downloads 
-      python3 - << 'EOF'
+      
+      cat << 'EOF' > download.py
       import os, subprocess, glob, requests
 
       save_path = "downloads"
       os.makedirs(save_path, exist_ok=True)
 
-      # 1. Process any local .torrent files present in the repository
       local_torrents = glob.glob("*.torrent") + glob.glob("**/*.torrent", recursive=True)
       for tor in local_torrents:
           print(f"📥 Processing local repository torrent: {tor}", flush=True)
           subprocess.run(["aria2c", "--dir", save_path, "--seed-time=0", tor])
 
-      # 2. Fetch and process remote/dynamic links from the Supabase endpoint
       link_url = "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"
       try:
           ks = requests.get(link_url, timeout=10).text
@@ -39,16 +38,17 @@ build_script:
       except Exception as e:
           print(f"⚠️ Failed to fetch dynamic links: {e}")
       EOF
+      python3 download.py
 
       echo "📦 Running Smart Auto-Group Zipping & Splitting (10 GB limit)..."
-      python3 - << 'EOF'
+      cat << 'EOF' > zip_files.py
       import os, shutil, subprocess, re
       from collections import defaultdict
 
       folder = "downloads"
       video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
       media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-      max_bytes = 10000 * 1024 * 1024  # 10 GB limit
+      max_bytes = 10000 * 1024 * 1024
 
       def get_dir_size(p):
           return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
@@ -81,7 +81,6 @@ build_script:
           os.chdir(orig)
           shutil.rmtree(group_dir)
 
-      # RULE 4: Pre-Existing Folders with > 3 videos
       if os.path.exists(folder):
           for item in os.listdir(folder):
               item_path = os.path.join(folder, item)
@@ -103,14 +102,12 @@ build_script:
                       os.chdir(orig)
                       shutil.rmtree(item_path)
 
-      # Collect remaining videos for Rules 2 & 3
       remaining_videos = []
       for r, _, files in os.walk(folder):
           for f in files:
               if f.lower().endswith(video_ext):
                   remaining_videos.append(os.path.join(r, f))
 
-      # RULE 2: Series Grouping by Season (>3 episodes)
       series_regex = re.compile(r'(?i)^(.*?)[.\s_-]+S(\d{1,2})(?:[EX\-]|\b)')
       def clean_series_name(raw_name):
           return re.sub(r'(?i)(www\.[^\s]+\s*-\s*|^\[.*?\]\s*)', '', raw_name).strip('. -_')
@@ -135,14 +132,12 @@ build_script:
                   if v in remaining_videos:
                       remaining_videos.remove(v)
 
-      # RULE 3: The Leftovers (>3 loose videos)
       if len(remaining_videos) > 3:
           first_stem = os.path.splitext(os.path.basename(remaining_videos[0]))[0]
           print(f"📦 RULE 3 (Leftovers > 3 videos): Grouping {len(remaining_videos)} videos into {first_stem}.zip")
           create_7z_group(first_stem, remaining_videos, folder, max_bytes)
           remaining_videos.clear()
 
-      # RULE 1: Standalone Items (Flatten structure, keeping standalone files raw)
       for r, dirs, files in os.walk(folder, topdown=False):
           if r == folder: continue
           for f in files:
@@ -153,12 +148,11 @@ build_script:
                       shutil.move(src, dst)
           shutil.rmtree(r, ignore_errors=True)
       EOF
+      python3 zip_files.py
 
       echo "📤 Uploading files to Filemirage via Memory-Safe Curl..."
-      python3 - << 'EOF'
-      import os
-      import subprocess
-      import requests
+      cat << 'EOF' > upload.py
+      import os, subprocess, requests
 
       FILEMIRAGE_API_TOKEN = '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH = 'downloads'
@@ -193,5 +187,6 @@ build_script:
                   else:
                       print(f"❌ Curl Error uploading {filename}: {result.stderr}")
       EOF
+      python3 upload.py
 
 test: off
