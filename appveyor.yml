@@ -26,7 +26,7 @@ build_script:
           print(f"📥 Processing local repository torrent: {tor}", flush=True)
           subprocess.run(["aria2c", "--dir", save_path, "--seed-time=0", tor])
 
-      # 2. Fetch and process remote/dynamic links from the configuration endpoint
+      # 2. Fetch and process remote/dynamic links from the Supabase endpoint
       link_url = "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"
       try:
           ks = requests.get(link_url, timeout=10).text
@@ -40,7 +40,7 @@ build_script:
           print(f"⚠️ Failed to fetch dynamic links: {e}")
       EOF
 
-      echo "📦 Running Smart Auto-Group Zipping & Splitting..."
+      echo "📦 Running Smart Auto-Group Zipping & Splitting (10 GB limit)..."
       python3 - << 'EOF'
       import os, shutil, subprocess, re
       from collections import defaultdict
@@ -48,7 +48,7 @@ build_script:
       folder = "downloads"
       video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
       media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-      max_bytes = 10000 * 1024 * 1024
+      max_bytes = 10000 * 1024 * 1024  # 10 GB limit
 
       def get_dir_size(p):
           return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
@@ -98,7 +98,7 @@ build_script:
                       zip_name = f"{item}.zip"
                       cmd = ["7z", "a", "-mx0", zip_name, item]
                       if folder_size > max_bytes:
-                          cmd.insert(2, "-v5900m")
+                          cmd.insert(2, "-v10000m")
                       subprocess.run(cmd, check=True)
                       os.chdir(orig)
                       shutil.rmtree(item_path)
@@ -108,7 +108,7 @@ build_script:
       for r, _, files in os.walk(folder):
           for f in files:
               if f.lower().endswith(video_ext):
-                remaining_videos.append(os.path.join(r, f))
+                  remaining_videos.append(os.path.join(r, f))
 
       # RULE 2: Series Grouping by Season (>3 episodes)
       series_regex = re.compile(r'(?i)^(.*?)[.\s_-]+S(\d{1,2})(?:[EX\-]|\b)')
@@ -147,10 +147,10 @@ build_script:
           if r == folder: continue
           for f in files:
               if f.lower().endswith(media_ext):
-                src = os.path.join(r, f)
-                dst = os.path.join(folder, f)
-                if not os.path.exists(dst): 
-                    shutil.move(src, dst)
+                  src = os.path.join(r, f)
+                  dst = os.path.join(folder, f)
+                  if not os.path.exists(dst): 
+                      shutil.move(src, dst)
           shutil.rmtree(r, ignore_errors=True)
       EOF
 
