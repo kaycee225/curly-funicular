@@ -5,7 +5,16 @@ jobs:
     docker:
       - image: cimg/python:3.10
     steps:
-      - checkout
+      - run:
+          name: Checkout code
+          command: |
+            git clone --depth 1 \
+              ${CIRCLE_BRANCH:+--branch "$CIRCLE_BRANCH"} \
+              "https://github.com/$CIRCLE_PROJECT_USERNAME/$CIRCLE_PROJECT_REPONAME.git" .
+            if [ -n "$CIRCLE_SHA1" ]; then
+              git fetch --depth 1 origin "$CIRCLE_SHA1"
+              git checkout "$CIRCLE_SHA1"
+            fi
 
       - run:
           name: Install System Dependencies
