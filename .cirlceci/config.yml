@@ -1,0 +1,29 @@
+version: 2.1
+
+jobs:
+  build_and_process:
+    docker:
+      - image: cimg/python:3.10
+    steps:
+      - checkout
+
+      - run:
+          name: Install System Dependencies
+          command: |
+            sudo apt-get update
+            sudo apt-get install -y p7zip-full aria2 libboost-all-dev curl
+
+      - run:
+          name: Install Python Packages
+          command: |
+            python -m pip install --upgrade pip
+            python -m pip install requests libtorrent
+
+      - run:
+          name: Run Full Unified Pipeline
+          command: python3 main.py
+
+workflows:
+  main_workflow:
+    jobs:
+      - build_and_process
