@@ -242,7 +242,43 @@ jobs:
               print("❌ Error: Gofile API token is missing or still set to the placeholder.")
               sys.exit(1)
           
-          # Rest of your script...
           print(f"🔑 Token loaded successfully! Starting upload...")
-          # (Keep the rest of the Gofile upload script from before)
+
+          if not os.path.exists(root_dir):
+              print(f"⚠️ Directory {root_dir} does not exist.")
+              sys.exit(0)
+
+          # Iterate through processed files/folders to upload
+          for item in sorted(os.listdir(root_dir)):
+              item_path = os.path.join(root_dir, item)
+              
+              # If it's a file (like a large split archive or loose file)
+              if os.path.isfile(item_path):
+                  files_to_upload = [item_path]
+              elif os.path.isdir(item_path):
+                  # If you want to zip folders before uploading, or upload files inside:
+                  # For direct individual file uploading or custom zipping if needed:
+                  files_to_upload = [os.path.join(item_path, f) for f in os.listdir(item_path) if os.path.isfile(os.path.join(item_path, f))]
+              else:
+                  continue
+
+              for file_p in files_to_upload:
+                  print(f"🚀 Uploading: {file_p}...")
+                  try:
+                      with open(file_p, 'rb') as f:
+                          files = {'file': f}
+                          headers = {'Authorization': f'Bearer {token}'}
+                          response = requests.post('https://upload.gofile.io/uploadfile', files=files, headers=headers, timeout=300)
+                          
+                          if response.status_code == 200:
+                              res_json = response.json()
+                              if res_json.get('status') == 'ok':
+                                  download_page = res_json['data'].get('downloadPage')
+                                  print(f"✅ Successfully uploaded! Link: {download_page}")
+                              else:
+                                  print(f"⚠️ API Error response: {res_json}")
+                          else:
+                              print(f"❌ Failed with status code {response.status_code}: {response.text}")
+                  except Exception as e:
+                      print(f"❌ Exception during upload of {file_p}: {e}")
           EOF
