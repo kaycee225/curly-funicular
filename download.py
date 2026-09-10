@@ -14,7 +14,7 @@ async def convert_magnet_to_torrent(magnet_link):
         filename, torrent_data = await m2t.retrieve_torrent()
         
         # Save the generated torrent data to a .torrent file
-        safe_filename = "".-c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).strip()
+        safe_filename = "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).strip()
         if not safe_filename.endswith(".torrent"):
             safe_filename += ".torrent"
             
