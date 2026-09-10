@@ -1,7 +1,7 @@
 import os, subprocess, requests
 
 FILEMIRAGE_API_TOKEN = '9QQH-DGES-CWQZ-FXNV'
-FOLDER_PATH = 'downloads'
+FOLDER_PATH = '/tmp/downloads'
 
 try:
     srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
