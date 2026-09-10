@@ -1,7 +1,7 @@
 import os, shutil, subprocess, re
 from collections import defaultdict
 
-folder = "downloads"
+folder = "/tmp/downloads"
 video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
 media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
 max_bytes = 10000 * 1024 * 1024  # 10 GB limit
