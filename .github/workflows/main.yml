@@ -125,13 +125,35 @@ jobs:
           processed_dir = "processed_staging"
           os.makedirs(processed_dir, exist_ok=True)
 
-          # Rule 3: Populated Nested Folders (> 3 video files)
+          # Rule 3: Populated Folders (> 3 video files) -> Keep original folder name, flatten inner structure
           for item in os.listdir(root_dir):
               item_path = os.path.join(root_dir, item)
-              if os.path.isdir(item_path):
-                  videos = [f for f in os.listdir(item_path) if f.lower().endswith(video_ext)]
-                  if len(videos) > 3:
-                      shutil.move(item_path, os.path.join(processed_dir, item))
+              if os.path.isdir(item_path) and item != processed_dir:
+                  sub_videos = []
+                  sub_files = []
+                  for r, _, files in os.walk(item_path):
+                      for f in files:
+                          f_lower = f.lower()
+                          f_full = os.path.join(r, f)
+                          if f_lower.endswith(video_ext) or f_lower.endswith(sub_ext):
+                              sub_files.append(f_full)
+                              if f_lower.endswith(video_ext):
+                                  sub_videos.append(f_full)
+                  
+                  if len(sub_videos) > 3:
+                      target_folder = os.path.join(processed_dir, item)
+                      os.makedirs(target_folder, exist_ok=True)
+                      for f_path in sub_files:
+                          dest_path = os.path.join(target_folder, os.path.basename(f_path))
+                          if not os.path.exists(dest_path):
+                              shutil.move(f_path, dest_path)
+                          else:
+                              base, ext = os.path.splitext(os.path.basename(f_path))
+                              counter = 1
+                              while os.path.exists(os.path.join(target_folder, f"{base}_{counter}{ext}")):
+                                  counter += 1
+                              shutil.move(f_path, os.path.join(target_folder, f"{base}_{counter}{ext}"))
+                      shutil.rmtree(item_path, ignore_errors=True)
 
           # Gather remaining loose files
           loose_files = []
@@ -168,7 +190,10 @@ jobs:
                   first_ep_name = os.path.splitext(os.path.basename(eps[0]))[0]
                   target_folder = os.path.join(processed_dir, first_ep_name)
                   os.makedirs(target_folder, exist_ok=True)
-                  for ep in eps: shutil.move(ep, os.path.join(target_folder, os.path.basename(ep)))
+                  for ep in eps: 
+                      dest_path = os.path.join(target_folder, os.path.basename(ep))
+                      if not os.path.exists(dest_path):
+                          shutil.move(ep, dest_path)
               else:
                   others.extend(eps)
 
@@ -177,11 +202,15 @@ jobs:
               bname = os.path.splitext(os.path.basename(m))[0]
               target_folder = os.path.join(processed_dir, bname)
               os.makedirs(target_folder, exist_ok=True)
-              shutil.move(m, os.path.join(target_folder, os.path.basename(m)))
+              dest_path = os.path.join(target_folder, os.path.basename(m))
+              if not os.path.exists(dest_path):
+                  shutil.move(m, dest_path)
               for s in subs:
                   s_bname = os.path.splitext(os.path.basename(s))[0]
                   if s_bname.startswith(bname) and os.path.exists(s):
-                      shutil.move(s, os.path.join(target_folder, os.path.basename(s)))
+                      sub_dest = os.path.join(target_folder, os.path.basename(s))
+                      if not os.path.exists(sub_dest):
+                          shutil.move(s, sub_dest)
 
           # Rule 4: Others (Date Folder)
           if others or any(os.path.exists(s) for s in subs):
@@ -189,9 +218,15 @@ jobs:
               target_folder = os.path.join(processed_dir, date_folder)
               os.makedirs(target_folder, exist_ok=True)
               for o in others:
-                  if os.path.exists(o): shutil.move(o, os.path.join(target_folder, os.path.basename(o)))
+                  if os.path.exists(o): 
+                      dest_path = os.path.join(target_folder, os.path.basename(o))
+                      if not os.path.exists(dest_path):
+                          shutil.move(o, dest_path)
               for s in subs:
-                  if os.path.exists(s): shutil.move(s, os.path.join(target_folder, os.path.basename(s)))
+                  if os.path.exists(s): 
+                      sub_dest = os.path.join(target_folder, os.path.basename(s))
+                      if not os.path.exists(sub_dest):
+                          shutil.move(s, sub_dest)
 
           # Cleanup original loose files root
           for item in os.listdir(root_dir):
@@ -248,37 +283,83 @@ jobs:
               print(f"⚠️ Directory {root_dir} does not exist.")
               sys.exit(0)
 
-          # Iterate through processed files/folders to upload
-          for item in sorted(os.listdir(root_dir)):
-              item_path = os.path.join(root_dir, item)
-              
-              # If it's a file (like a large split archive or loose file)
-              if os.path.isfile(item_path):
-                  files_to_upload = [item_path]
-              elif os.path.isdir(item_path):
-                  # If you want to zip folders before uploading, or upload files inside:
-                  # For direct individual file uploading or custom zipping if needed:
-                  files_to_upload = [os.path.join(item_path, f) for f in os.listdir(item_path) if os.path.isfile(os.path.join(item_path, f))]
-              else:
+          # Dynamically get Gofile upload server node
+          gofile_server = "upload"
+          try:
+              srv_res = requests.get("https://api.gofile.io/servers", timeout=10).json()
+              if srv_res.get('status') == 'ok':
+                  servers_data = srv_res.get('data', {})
+                  if isinstance(servers_data, list) and len(servers_data) > 0:
+                      gofile_server = servers_data[0]
+                  elif isinstance(servers_data, dict):
+                      srv_list = servers_data.get('servers', [])
+                      if srv_list:
+                          gofile_server = srv_list[0].get('name', 'upload')
+                      else:
+                          gofile_server = servers_data.get('server', 'upload')
+              print(f"🌐 Target Gofile upload node: {gofile_server}")
+          except Exception as e:
+              print(f"⚠️ Notice: Server fetch warning ({e}), defaulting to 'upload.gofile.io'.")
+
+          upload_url = f"https://{gofile_server}.gofile.io/contents/uploadfile" if gofile_server != "upload" else "https://upload.gofile.io/contents/uploadfile"
+          headers = {'Authorization': f'Bearer {token}'}
+
+          # Iterate through each organized folder in root_dir
+          for folder_name in sorted(os.listdir(root_dir)):
+              folder_path = os.path.join(root_dir, folder_name)
+              if not os.path.isdir(folder_path):
                   continue
 
-              for file_p in files_to_upload:
-                  print(f"🚀 Uploading: {file_p}...")
-                  try:
-                      with open(file_p, 'rb') as f:
-                          files = {'file': f}
-                          headers = {'Authorization': f'Bearer {token}'}
-                          response = requests.post('https://upload.gofile.io/uploadfile', files=files, headers=headers, timeout=300)
-                          
-                          if response.status_code == 200:
-                              res_json = response.json()
-                              if res_json.get('status') == 'ok':
-                                  download_page = res_json['data'].get('downloadPage')
-                                  print(f"✅ Successfully uploaded! Link: {download_page}")
+              print(f"\n📁 Creating remote Gofile folder: '{folder_name}'...")
+              target_folder_id = None
+              
+              # Create remote folder on Gofile
+              try:
+                  folder_payload = {"folderName": folder_name}
+                  f_res = requests.post("https://api.gofile.io/contents/createFolder", headers=headers, json=folder_payload, timeout=15).json()
+                  if f_res.get('status') == 'ok':
+                      target_folder_id = f_res['data']['id']
+                      print(f"✅ Folder created successfully. ID: {target_folder_id}")
+                  else:
+                      print(f"⚠️ Warning: Could not create folder '{folder_name}' ({f_res}). Uploading to root instead.")
+              except Exception as e:
+                  print(f"⚠️ Error creating remote folder: {e}. Uploading to root instead.")
+
+              # Upload each file inside this specific folder
+              for file_f in sorted(os.listdir(folder_path)):
+                  file_path = os.path.join(folder_path, file_f)
+                  if not os.path.isfile(file_path):
+                      continue
+
+                  file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                  print(f"⬆️ Uploading to '{folder_name}': {file_f} ({file_size_mb:.2f} MB)")
+                  
+                  success = False
+                  for attempt in range(3):
+                      try:
+                          with open(file_path, 'rb') as f:
+                              files_data = {'file': (file_f, f)}
+                              data_payload = {}
+                              if target_folder_id:
+                                  data_payload['folderId'] = target_folder_id
+
+                              response = requests.post(upload_url, files=files_data, data=data_payload, headers=headers, timeout=7200)
+                              
+                              if response.status_code == 200:
+                                  res_json = response.json()
+                                  if res_json.get('status') == 'ok':
+                                      download_page = res_json['data'].get('downloadPage')
+                                      print(f"✅ Successfully uploaded! Link: {download_page}")
+                                      success = True
+                                      break
+                                  else:
+                                      print(f"⚠️ API Error response on attempt {attempt+1}: {res_json}")
                               else:
-                                  print(f"⚠️ API Error response: {res_json}")
-                          else:
-                              print(f"❌ Failed with status code {response.status_code}: {response.text}")
-                  except Exception as e:
-                      print(f"❌ Exception during upload of {file_p}: {e}")
+                                  print(f"❌ Failed with status code {response.status_code} on attempt {attempt+1}: {response.text}")
+                      except Exception as e:
+                          print(f"❌ Exception during upload of {file_f} on attempt {attempt+1}: {e}")
+                          time.sleep(5)
+                  
+                  if not success:
+                      print(f"❌ Permanent failure uploading file: {file_f}")
           EOF
