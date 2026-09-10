@@ -268,10 +268,11 @@ jobs:
           GOFILE_API_TOKEN: ${{ env.GOFILE_API_TOKEN }}
         run: |
           python3 - << 'EOF'
-          import os, sys, requests
+          import os, sys, requests, time
 
           token = os.environ.get('GOFILE_API_TOKEN')
           root_dir = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          parent_folder_id = '7fecfd30-2eb1-4887-a31d-e2f67c0e79bb' # <--- REPLACE WITH YOUR FOLDER ID
 
           if not token or token == 'PASTE_YOUR_ACTUAL_TOKEN_HERE':
               print("❌ Error: Gofile API token is missing or still set to the placeholder.")
@@ -313,9 +314,12 @@ jobs:
               print(f"\n📁 Creating remote Gofile folder: '{folder_name}'...")
               target_folder_id = None
               
-              # Create remote folder on Gofile
+              # Create remote folder on Gofile using the parent_folder_id
               try:
-                  folder_payload = {"folderName": folder_name}
+                  folder_payload = {
+                      "folderName": folder_name,
+                      "parentFolderId": parent_folder_id
+                  }
                   f_res = requests.post("https://api.gofile.io/contents/createFolder", headers=headers, json=folder_payload, timeout=15).json()
                   if f_res.get('status') == 'ok':
                       target_folder_id = f_res['data']['id']
