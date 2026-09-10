@@ -16,7 +16,7 @@ async def convert_magnet_with_timeout(semaphore, magnet_link, retries=2):
                 m2t = Magnet2Torrent(magnet_link)
                 
                 # Enforce a 4-minute (240 seconds) timeout on the metadata retrieval
-                filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=240.0)
+                filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=80.0)
                 
                 safe_filename = "".join(c for c in filename if c.isalnum() or c in (' ', '.', '_', '-')).strip()
                 if not safe_filename.endswith(".torrent"):
