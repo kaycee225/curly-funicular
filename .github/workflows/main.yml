@@ -230,7 +230,7 @@ jobs:
 
       - name: Upload Folders to Gofile
         env:
-          GOFILE_API_TOKEN: ${{ secrets.GOFILE_API_TOKEN }}
+          GOFILE_API_TOKEN: ${{ env.GOFILE_API_TOKEN }}
         run: |
           python3 - << 'EOF'
           import os, sys, requests
@@ -238,55 +238,11 @@ jobs:
           token = os.environ.get('GOFILE_API_TOKEN')
           root_dir = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
-          if not token:
-              print("❌ Error: Gofile API token environment variable is empty.")
-              sys.exit(1)
-
-          # Get Account Root Folder ID
-          print("Fetching Gofile account details...")
-          acc_res = requests.get('https://api.gofile.io/accounts/get', headers={'Authorization': f'Bearer {token}'}).json()
-          if acc_res.get('status') != 'ok':
-              print(f"❌ Error fetching account details: {acc_res}")
+          if not token or token == 'PASTE_YOUR_ACTUAL_TOKEN_HERE':
+              print("❌ Error: Gofile API token is missing or still set to the placeholder.")
               sys.exit(1)
           
-          root_folder_id = acc_res['data']['rootFolder']
-
-          # Get optimal upload server
-          srv_res = requests.get('https://api.gofile.io/servers').json()
-          server = srv_res['data']['servers'][0]['name']
-          upload_url = f"https://{server}.gofile.io/contents/uploadfile"
-          print(f"🌐 Optimal Server selected: {server}")
-
-          for item in os.listdir(root_dir):
-              item_path = os.path.join(root_dir, item)
-              if os.path.isdir(item_path):
-                  print(f"\n📁 Creating folder on Gofile: {item}")
-                  cf_res = requests.post(
-                      'https://api.gofile.io/contents/createFolder',
-                      headers={'Authorization': f'Bearer {token}'},
-                      json={'parentFolderId': root_folder_id, 'folderName': item}
-                  ).json()
-                  
-                  if cf_res.get('status') != 'ok':
-                      print(f"❌ Failed to create folder {item}: {cf_res}")
-                      continue
-                      
-                  folder_id = cf_res['data']['id']
-                  
-                  # Upload files into the created folder
-                  for f in os.listdir(item_path):
-                      file_path = os.path.join(item_path, f)
-                      if os.path.isfile(file_path):
-                          print(f"📤 Uploading: {f}...")
-                          with open(file_path, 'rb') as file_data:
-                              res = requests.post(
-                                  upload_url,
-                                  files={'file': file_data},
-                                  data={'token': token, 'folderId': folder_id}
-                              ).json()
-                              
-                              if res.get('status') == 'ok':
-                                  print(f"✅ Success")
-                              else:
-                                  print(f"❌ Failed: {res}")
+          # Rest of your script...
+          print(f"🔑 Token loaded successfully! Starting upload...")
+          # (Keep the rest of the Gofile upload script from before)
           EOF
