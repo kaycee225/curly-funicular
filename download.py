@@ -5,7 +5,7 @@ import requests
 import asyncio
 from magnet2torrent import Magnet2Torrent, FailedToFetchException
 
-save_path = "downloads"
+save_path = "/tmp/downloads"
 os.makedirs(save_path, exist_ok=True)
 
 async def convert_magnet_with_timeout(semaphore, magnet_link, retries=2):
