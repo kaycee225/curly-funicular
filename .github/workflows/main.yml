@@ -229,15 +229,17 @@ jobs:
           EOF
 
       - name: Upload Folders to Gofile
+        env:
+          GOFILE_API_TOKEN: ${{ secrets.GOFILE_API_TOKEN }}
         run: |
           python3 - << 'EOF'
           import os, sys, requests
 
           token = os.environ.get('GOFILE_API_TOKEN')
-          root_dir = os.environ.get('FOLDER_PATH')
+          root_dir = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
-          if not token or token == 'NkEP9nPmjC5bYQB7ZabZKnsUEBi7ww85':
-              print("❌ Error: Gofile API token not set.")
+          if not token:
+              print("❌ Error: Gofile API token environment variable is empty.")
               sys.exit(1)
 
           # Get Account Root Folder ID
