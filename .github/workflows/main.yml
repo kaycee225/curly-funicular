@@ -1,6 +1,8 @@
 name: Torrent Downloader & Uploader
 
 on:
+  push:
+   branches: Aria
   workflow_dispatch:
     inputs:
       link_url:
