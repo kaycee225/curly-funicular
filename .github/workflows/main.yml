@@ -435,7 +435,7 @@ jobs:
 
       - name: Execute Pipeline
         env:
-          LINK_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
-          KILL_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
+          LINK_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
+          KILL_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
           PYTHONUNBUFFERED: "1"
         run: python runner.py
