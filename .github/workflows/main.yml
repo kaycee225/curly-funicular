@@ -1,18 +1,16 @@
 name: Torrent Downloader & Uploader
 
 on:
-  push:
-    branches: Aria
   workflow_dispatch:
     inputs:
       link_url:
         description: 'URL containing magnet/torrent links'
         required: false
-        default: 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt'
+        default: 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt'
       kill_url:
         description: 'Kill switch URL'
         required: false
-        default: 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt'
+        default: 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt'
 
 jobs:
   run-downloader:
@@ -31,7 +29,7 @@ jobs:
       - name: Install System & Python Dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y aria2 p7zip-full wget python3-pip
+          sudo apt-get install -y aria2 p7zip-full wget curl python3-pip
           python -m pip install --upgrade pip
           pip install magnet2torrent requests
 
@@ -51,10 +49,14 @@ jobs:
           from collections import defaultdict
           import requests
 
-          # Hardcoded Settings
+          # =========================================================================
+          # HARDCODED CONFIGURATION - PASTE YOUR FILEMIRAGE TOKEN DIRECTLY BELOW
+          # =========================================================================
           FILEMIRAGE_API_TOKEN = "9QQH-DGES-CWQZ-FXNV"
-          LINK_URL = os.environ.get("LINK_URL", "https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt")
-          KILL_URL = os.environ.get("KILL_URL", "https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt")
+          # =========================================================================
+
+          LINK_URL = os.environ.get("LINK_URL", "https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt")
+          KILL_URL = os.environ.get("KILL_URL", "https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt")
 
           FOLDER_PATH = os.path.abspath("/tmp/downloaded_files")
           ARIA2_RPC_URL = "http://127.0.0.1:6800/jsonrpc"
@@ -147,6 +149,7 @@ jobs:
               stalled_tracker = {}
 
               while True:
+                  # Check Kill switch
                   if KILL_URL:
                       try:
                           ks = requests.get(KILL_URL, timeout=5).text
@@ -170,6 +173,7 @@ jobs:
                       except Exception:
                           pass
 
+                  # Add new links
                   if LINK_URL:
                       try:
                           page = requests.get(LINK_URL, timeout=5).text
@@ -184,6 +188,28 @@ jobs:
                       except Exception:
                           pass
 
+                  # Check errored or timed out tasks -> Remove & Re-add
+                  try:
+                      stopped = aria2_rpc("aria2.tellStopped", [0, 1000]) or []
+                      for task in stopped:
+                          gid = task.get("gid")
+                          status = task.get("status")
+                          if status == "error":
+                              name = task.get("files", [{}])[0].get("path", "Unknown")
+                              log(f"⚠️ Task '{os.path.basename(name)}' errored/timed out. Removing download result and retrying...")
+                              aria2_rpc("aria2.removeDownloadResult", [gid])
+                              
+                              original_source = task_sources.get(gid)
+                              if original_source:
+                                  new_gid = add_task_to_aria2(original_source)
+                                  if new_gid:
+                                      task_sources[new_gid] = original_source
+                                      log(f"🔄 Re-added failed task (New GID: {new_gid})")
+                              task_sources.pop(gid, None)
+                  except Exception:
+                      pass
+
+                  # Monitor active progress & 3-minute stall handling
                   try:
                       active = aria2_rpc("aria2.tellActive") or []
                       waiting = aria2_rpc("aria2.tellWaiting", [0, 1000]) or []
@@ -209,13 +235,14 @@ jobs:
                               elif t.get("files") and t["files"][0].get("path"):
                                   name = os.path.basename(t["files"][0]["path"])
 
+                              # 3-minute stall handling -> Remove and Re-add
                               if speed == 0:
                                   if gid not in stalled_tracker:
                                       stalled_tracker[gid] = time.time()
                                   else:
                                       stalled_duration = time.time() - stalled_tracker[gid]
                                       if stalled_duration >= 180:
-                                          log(f"⏳ Task '{name}' stalled for 3 minutes (0 KB/s). Restarting task...")
+                                          log(f"⏳ Task '{name}' stalled for 3 minutes (0 KB/s). Force removing & re-adding...")
                                           aria2_rpc("aria2.forceRemove", [gid])
                                           
                                           original_source = task_sources.get(gid)
@@ -223,7 +250,7 @@ jobs:
                                               new_gid = add_task_to_aria2(original_source)
                                               if new_gid:
                                                   task_sources[new_gid] = original_source
-                                                  log(f"🔄 Re-added task: {name} (New GID: {new_gid})")
+                                                  log(f"🔄 Re-added stalled task: {name} (New GID: {new_gid})")
                                           
                                           stalled_tracker.pop(gid, None)
                                           task_sources.pop(gid, None)
@@ -389,14 +416,15 @@ jobs:
               os.rmdir(processed_dir)
               log("✅ File sorting, splitting & zipping complete!")
 
-          def upload_files(root_dir, filemirage_token):
+          def upload_files(root_dir, token):
+              """Uploads ZIP files directly via cURL with non-JSON guard to prevent crashing."""
               zip_files = sorted([f for f in os.listdir(root_dir) if f.endswith('.zip')])
               if not zip_files:
                   log("⚠️ No ZIP archives found to upload.")
                   return
 
-              if not filemirage_token or filemirage_token == 'YOUR_FILEMIRAGE_API_TOKEN_HERE':
-                  log("⚠️ Filemirage API token is missing or set to default.")
+              if not token or token == "YOUR_FILEMIRAGE_API_TOKEN_HERE":
+                  log("❌ FILEMIRAGE_API_TOKEN is not set in script! Replace 'YOUR_FILEMIRAGE_API_TOKEN_HERE' with your real API key.")
                   return
 
               for file_name in zip_files:
@@ -404,26 +432,43 @@ jobs:
                   file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
                   log(f"⬆️ [Filemirage] Uploading: {file_name} ({file_size_mb:.2f} MB)...")
-                  for attempt in range(3):
-                      try:
-                          with open(file_path, 'rb') as f:
-                              fm_headers = {'Authorization': f'Bearer {filemirage_token}'}
-                              fm_res = requests.post(
-                                  "https://filemirage.com/api/v1/upload",
-                                  files={'file': (file_name, f)},
-                                  headers=fm_headers,
-                                  timeout=7200
-                              ).json()
-                              
+                  
+                  curl_cmd = [
+                      "curl", "-s", "-i", "-X", "POST",
+                      "https://filemirage.com/api/v1/upload",
+                      "-H", f"Authorization: Bearer {token}",
+                      "-F", f"token={token}",
+                      "-F", f"key={token}",
+                      "-F", f"file=@{file_path}",
+                      "--connect-timeout", "60",
+                      "--retry", "2"
+                  ]
+
+                  try:
+                      res = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=14400)
+                      output = res.stdout.strip()
+                      
+                      # Parse body after HTTP headers
+                      parts = output.split("\r\n\r\n")
+                      body = parts[-1] if len(parts) > 1 else output
+
+                      if res.returncode == 0:
+                          try:
+                              fm_res = json.loads(body)
                               if fm_res.get('status') == 'success' or fm_res.get('success'):
                                   link = fm_res.get('url') or fm_res.get('data', {}).get('url')
                                   log(f"✅ [Filemirage] Success: {link}")
-                                  break
                               else:
-                                  log(f"⚠️ [Filemirage] API Error (Attempt {attempt+1}): {fm_res}")
-                      except Exception as e:
-                          log(f"❌ [Filemirage] Attempt {attempt+1} failed: {e}")
-                          time.sleep(5)
+                                  log(f"⚠️ [Filemirage] Upload Error: {body}")
+                          except json.JSONDecodeError:
+                              log(f"❌ [Filemirage] Server returned HTML/Non-JSON response instead of valid JSON.")
+                              log(f"📄 Full response text:\n{output[:500]}")
+                      else:
+                          log(f"❌ [Filemirage] cURL Error Code {res.returncode}: {res.stderr}")
+                  except subprocess.TimeoutExpired:
+                      log(f"❌ [Filemirage] Upload timed out for {file_name}")
+                  except Exception as e:
+                      log(f"❌ [Filemirage] Exception: {e}")
 
           if __name__ == "__main__":
               setup_aria2()
@@ -435,7 +480,7 @@ jobs:
 
       - name: Execute Pipeline
         env:
-          LINK_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
-          KILL_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
+          LINK_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
+          KILL_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
           PYTHONUNBUFFERED: "1"
         run: python runner.py
