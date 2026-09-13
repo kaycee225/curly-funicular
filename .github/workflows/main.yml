@@ -277,11 +277,11 @@ jobs:
               sys.exit(1)
 
           try:
-              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
+              srv_res = requests.get("https://filemirage.com/api/servers", timeout=15).json()
               server = srv_res['data']['server']
-              print(f"🌐 Target Upload Server: {server}")
+              print(f"🌐 Target Upload Server: {server}", flush=True)
           except Exception as e:
-              print(f"❌ Failed to fetch Filemirage server: {e}")
+              print(f"❌ Failed to fetch Filemirage server: {e}", flush=True)
               sys.exit(1)
 
           if os.path.exists(folder_path):
@@ -292,25 +292,34 @@ jobs:
                       
                       file_path = os.path.join(root, filename)
                       file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-                      print(f"📤 Uploading: {filename} ({file_size_mb:.2f} MB)")
+                      print(f"\n📤 Starting Upload: {filename} ({file_size_mb:.2f} MB)", flush=True)
                       
                       curl_cmd = [
-                          "curl", "-s", "-S", "-X", "POST",
+                          "curl",
+                          "--progress-bar",
+                          "-X", "POST",
                           f"{server}/upload.php",
                           "-H", f"Authorization: Bearer {api_token}",
+                          "-H", "Expect:",
+                          "-H", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
                           "-F", f"file=@{file_path}",
-                          "--max-time", "3600"
+                          "--connect-timeout", "30",
+                          "--speed-limit", "1024",
+                          "--speed-time", "120",
+                          "--retry", "3",
+                          "--retry-delay", "5"
                       ]
                       
                       result = subprocess.run(curl_cmd, capture_output=True, text=True)
+                      res_text = result.stdout + result.stderr
+                      
                       if result.returncode == 0:
-                          res_text = result.stdout
-                          print(f"Response: {res_text}")
+                          print(f"\nResponse: {res_text}", flush=True)
                           if '"error"' in res_text.lower() or '"status":4' in res_text.lower():
-                              print(f"❌ API Error on {filename}")
+                              print(f"❌ API Error uploading {filename}", flush=True)
                               sys.exit(1)
-                          print(f"✅ Successfully uploaded {filename}")
+                          print(f"✅ Successfully uploaded {filename}", flush=True)
                       else:
-                          print(f"❌ Curl Error uploading {filename}: {result.stderr}")
+                          print(f"\n❌ Curl Error uploading {filename}:\n{res_text}", flush=True)
                           sys.exit(1)
           EOF
