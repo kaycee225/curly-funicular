@@ -1,488 +1,212 @@
-name: Torrent Downloader & Uploader
+Name: qBittorrent & Filemirage
 
 on:
   push:
-   branches: Aria
+    branches:
+      - Aria
   workflow_dispatch:
     inputs:
       link_url:
         description: 'URL containing magnet/torrent links'
         required: false
-        default: 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt'
+        default: 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt'
       kill_url:
         description: 'Kill switch URL'
         required: false
-        default: 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt'
+        default: 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt'
 
 jobs:
-  run-downloader:
+  torrent-upload:
     runs-on: ubuntu-latest
     timeout-minutes: 360
+    env:
+      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      FOLDER_PATH: 'downloaded_files'
+      LINK_FETCH_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
+      KILL_SWITCH_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e25a8924-a24a-46c6-b875-90ffc5864bbd.txt' }}
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install System & Python Dependencies
+      - name: Install Dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y aria2 p7zip-full wget curl python3-pip
-          python -m pip install --upgrade pip
-          pip install magnet2torrent requests
+          sudo apt update
+          sudo apt install -y qbittorrent-nox jq curl zip p7zip-full python3 python3-requests
 
-      - name: Create Execution Script
+      - name: Download with qBittorrent
         run: |
-          cat << 'EOF' > runner.py
-          import os
-          import sys
-          import re
-          import time
-          import shutil
-          import subprocess
-          import json
-          import base64
-          import hashlib
-          from datetime import datetime
-          from collections import defaultdict
-          import requests
-
-          # =========================================================================
-          # HARDCODED CONFIGURATION - PASTE YOUR FILEMIRAGE TOKEN DIRECTLY BELOW
-          # =========================================================================
-          FILEMIRAGE_API_TOKEN = "9QQH-DGES-CWQZ-FXNV"
-          # =========================================================================
-
-          LINK_URL = os.environ.get("LINK_URL", "https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt")
-          KILL_URL = os.environ.get("KILL_URL", "https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt")
-
-          FOLDER_PATH = os.path.abspath("/tmp/downloaded_files")
-          ARIA2_RPC_URL = "http://127.0.0.1:6800/jsonrpc"
-
-          VIDEO_EXTS = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          SUB_EXTS = ('.srt', '.ass', '.vtt', '.sub')
-          MAX_FOLDER_SIZE = 18 * 1024 * 1024 * 1024  # 18 GB
-
-          def log(message):
-              timestamp = datetime.now().strftime("%H:%M:%S")
-              print(f"[{timestamp}] {message}", flush=True)
-
-          def setup_aria2():
-              log("🚀 Starting aria2 daemon...")
-              os.makedirs(FOLDER_PATH, exist_ok=True)
-              subprocess.Popen([
-                  "aria2c",
-                  "--enable-rpc=true",
-                  "--rpc-listen-all=false",
-                  "--rpc-listen-port=6800",
-                  "--daemon=true",
-                  f"--dir={FOLDER_PATH}",
-                  "--seed-time=0",
-                  "--max-connection-per-server=16",
-                  "--split=16",
-                  "--min-split-size=1M",
-                  "--bt-stop-timeout=180"
-              ])
-              time.sleep(3)
-
-          def aria2_rpc(method, params=None):
-              if params is None:
-                  params = []
-              payload = {
-                  "jsonrpc": "2.0",
-                  "id": "1",
-                  "method": method,
-                  "params": params
-              }
-              try:
-                  res = requests.post(ARIA2_RPC_URL, json=payload, timeout=5)
-                  return res.json().get("result")
-              except Exception:
-                  return None
-
-          def fmt_eta(sec):
-              if sec is None or sec < 0 or sec >= 8640000:
-                  return "∞"
-              m, s = divmod(int(sec), 60)
-              h, m = divmod(m, 60)
-              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if h else f"{s}s")
-
-          def magnet_to_torrent_file(magnet_url):
-              log("🧲 Converting magnet link to .torrent file...")
-              link_hash = hashlib.md5(magnet_url.encode()).hexdigest()[:8]
-              torrent_file = os.path.join("/tmp", f"download_{link_hash}.torrent")
-              
-              try:
-                  proc = subprocess.run(
-                      ["magnet2torrent", magnet_url, "-o", torrent_file],
-                      stdout=subprocess.PIPE,
-                      stderr=subprocess.PIPE,
-                      text=True,
-                      timeout=30
-                  )
-                  if os.path.exists(torrent_file) and os.path.getsize(torrent_file) > 0:
-                      log(f"✅ Successfully converted magnet to: {torrent_file}")
-                      return torrent_file
-              except Exception as e:
-                  log(f"⚠️ magnet2torrent conversion failed: {e}")
-              
-              return None
-
-          def add_task_to_aria2(source):
-              if source.startswith("magnet:"):
-                  torrent_file = magnet_to_torrent_file(source)
-                  if torrent_file:
-                      source = torrent_file
-
-              if source.endswith(".torrent") and os.path.exists(source):
-                  with open(source, "rb") as f:
-                      torrent_b64 = base64.b64encode(f.read()).decode("utf-8")
-                  return aria2_rpc("aria2.addTorrent", [torrent_b64])
-              else:
-                  return aria2_rpc("aria2.addUri", [[source]])
-
-          def download_files():
-              added_links = set()
-              task_sources = {}
-              stalled_tracker = {}
-
-              while True:
-                  # Check Kill switch
-                  if KILL_URL:
-                      try:
-                          ks = requests.get(KILL_URL, timeout=5).text
-                          if "STOP.ALL.TORRENTS" in ks:
-                              log("🛑 Global kill switch activated!")
-                              break
-                          targets = [l.replace(' NO', '').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
-                          if targets:
-                              active = aria2_rpc("aria2.tellActive") or []
-                              waiting = aria2_rpc("aria2.tellWaiting", [0, 1000]) or []
-                              for task in active + waiting:
-                                  name = "unknown"
-                                  if "bittorrent" in task and "info" in task["bittorrent"]:
-                                      name = task["bittorrent"]["info"].get("name", "").lower()
-                                  elif task.get("files") and task["files"][0].get("path"):
-                                      name = os.path.basename(task["files"][0]["path"]).lower()
-                                  
-                                  if any(tg in name for tg in targets if tg):
-                                      aria2_rpc("aria2.forceRemove", [task["gid"]])
-                                      log(f"🗑️ Killed task: {name}")
-                      except Exception:
-                          pass
-
-                  # Add new links
-                  if LINK_URL:
-                      try:
-                          page = requests.get(LINK_URL, timeout=5).text
-                          for link in page.splitlines():
-                              link = link.strip()
-                              if link and not link.startswith('#') and link not in added_links:
-                                  if link.startswith("magnet:") or link.startswith("http") or link.endswith(".torrent"):
-                                      gid = add_task_to_aria2(link)
-                                      if gid:
-                                          task_sources[gid] = link
-                                          added_links.add(link)
-                      except Exception:
-                          pass
-
-                  # Check errored or timed out tasks -> Remove & Re-add
-                  try:
-                      stopped = aria2_rpc("aria2.tellStopped", [0, 1000]) or []
-                      for task in stopped:
-                          gid = task.get("gid")
-                          status = task.get("status")
-                          if status == "error":
-                              name = task.get("files", [{}])[0].get("path", "Unknown")
-                              log(f"⚠️ Task '{os.path.basename(name)}' errored/timed out. Removing download result and retrying...")
-                              aria2_rpc("aria2.removeDownloadResult", [gid])
-                              
-                              original_source = task_sources.get(gid)
-                              if original_source:
-                                  new_gid = add_task_to_aria2(original_source)
-                                  if new_gid:
-                                      task_sources[new_gid] = original_source
-                                      log(f"🔄 Re-added failed task (New GID: {new_gid})")
-                              task_sources.pop(gid, None)
-                  except Exception:
-                      pass
-
-                  # Monitor active progress & 3-minute stall handling
-                  try:
-                      active = aria2_rpc("aria2.tellActive") or []
-                      waiting = aria2_rpc("aria2.tellWaiting", [0, 1000]) or []
-
-                      if not active and not waiting:
-                          if added_links:
-                              break
-                          else:
-                              log("📥 Waiting for links to download...")
-                      else:
-                          for t in active:
-                              gid = t.get("gid")
-                              completed = int(t.get("completedLength", 0))
-                              total = int(t.get("totalLength", 0))
-                              speed = int(t.get("downloadSpeed", 0))
-                              
-                              prog = (completed / total * 100) if total > 0 else 0
-                              speed_mb = speed / (1024 * 1024)
-                              
-                              name = "Unknown"
-                              if "bittorrent" in t and "info" in t["bittorrent"]:
-                                  name = t["bittorrent"]["info"].get("name", "Unknown Torrent")
-                              elif t.get("files") and t["files"][0].get("path"):
-                                  name = os.path.basename(t["files"][0]["path"])
-
-                              # 3-minute stall handling -> Remove and Re-add
-                              if speed == 0:
-                                  if gid not in stalled_tracker:
-                                      stalled_tracker[gid] = time.time()
-                                  else:
-                                      stalled_duration = time.time() - stalled_tracker[gid]
-                                      if stalled_duration >= 180:
-                                          log(f"⏳ Task '{name}' stalled for 3 minutes (0 KB/s). Force removing & re-adding...")
-                                          aria2_rpc("aria2.forceRemove", [gid])
-                                          
-                                          original_source = task_sources.get(gid)
-                                          if original_source:
-                                              new_gid = add_task_to_aria2(original_source)
-                                              if new_gid:
-                                                  task_sources[new_gid] = original_source
-                                                  log(f"🔄 Re-added stalled task: {name} (New GID: {new_gid})")
-                                          
-                                          stalled_tracker.pop(gid, None)
-                                          task_sources.pop(gid, None)
-                                          continue
-                              else:
-                                  stalled_tracker.pop(gid, None)
-
-                              eta_sec = (total - completed) / speed if speed > 0 and total > 0 else -1
-                              eta_str = fmt_eta(eta_sec)
-                              log(f"📥 Downloading: {name} | {prog:.1f}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                  except Exception:
-                      pass
-                  
-                  time.sleep(3)
-
-              subprocess.run(["pkill", "aria2c"], check=False)
-              time.sleep(2)
-
-          def sort_split_and_zip_files(root_dir):
-              if not os.path.exists(root_dir):
-                  log(f"⚠️ Directory {root_dir} does not exist.")
-                  return
-
-              log("🧹 Starting Smart File Sorting & Splitting...")
-              processed_dir = os.path.join(root_dir, "processed_staging")
-              os.makedirs(processed_dir, exist_ok=True)
-
-              for item in os.listdir(root_dir):
-                  item_path = os.path.join(root_dir, item)
-                  if os.path.isdir(item_path) and item_path != processed_dir:
-                      sub_videos, sub_files = [], []
-                      for r, _, files in os.walk(item_path):
-                          for f in files:
-                              f_lower = f.lower()
-                              f_full = os.path.join(r, f)
-                              if f_lower.endswith(VIDEO_EXTS) or f_lower.endswith(SUB_EXTS):
-                                  sub_files.append(f_full)
-                                  if f_lower.endswith(VIDEO_EXTS):
-                                      sub_videos.append(f_full)
-                      
-                      if len(sub_videos) > 3:
-                          target_folder = os.path.join(processed_dir, item)
-                          os.makedirs(target_folder, exist_ok=True)
-                          for f_path in sub_files:
-                              dest_path = os.path.join(target_folder, os.path.basename(f_path))
-                              if not os.path.exists(dest_path):
-                                  shutil.move(f_path, dest_path)
-                              else:
-                                  base, ext = os.path.splitext(os.path.basename(f_path))
-                                  counter = 1
-                                  while os.path.exists(os.path.join(target_folder, f"{base}_{counter}{ext}")):
-                                      counter += 1
-                                  shutil.move(f_path, os.path.join(target_folder, f"{base}_{counter}{ext}"))
-                          shutil.rmtree(item_path, ignore_errors=True)
-
-              loose_files = []
-              for r, _, files in os.walk(root_dir):
-                  if processed_dir in r:
-                      continue
-                  for f in files:
-                      if f.lower().endswith(VIDEO_EXTS) or f.lower().endswith(SUB_EXTS):
-                          loose_files.append(os.path.join(r, f))
-
-              season_pattern = re.compile(r'(?i)(s\d{2,}e\d{2,}|season\s*\d+|s\d{2,})')
-              series_groups = defaultdict(list)
-              movies, others = [], []
-              
-              vids = [f for f in loose_files if f.lower().endswith(VIDEO_EXTS)]
-              subs = [f for f in loose_files if f.lower().endswith(SUB_EXTS)]
-
-              for v in vids:
-                  bname = os.path.basename(v)
-                  match = season_pattern.search(bname)
-                  if match:
-                      marker = match.group(0).lower()
-                      idx = bname.lower().find(marker)
-                      show_name = bname[:idx].strip(' .-_')
-                      series_groups[(show_name, marker)].append(v)
-                  else:
-                      movies.append(v)
-
-              for (show, marker), eps in series_groups.items():
-                  if len(eps) > 3:
-                      eps.sort()
-                      first_ep_name = os.path.splitext(os.path.basename(eps[0]))[0]
-                      target_folder = os.path.join(processed_dir, first_ep_name)
-                      os.makedirs(target_folder, exist_ok=True)
-                      for ep in eps:
-                          dest_path = os.path.join(target_folder, os.path.basename(ep))
-                          if not os.path.exists(dest_path):
-                              shutil.move(ep, dest_path)
-                  else:
-                      others.extend(eps)
-
-              for m in movies:
-                  bname = os.path.splitext(os.path.basename(m))[0]
-                  target_folder = os.path.join(processed_dir, bname)
-                  os.makedirs(target_folder, exist_ok=True)
-                  dest_path = os.path.join(target_folder, os.path.basename(m))
-                  if not os.path.exists(dest_path):
-                      shutil.move(m, dest_path)
-                  for s in subs:
-                      s_bname = os.path.splitext(os.path.basename(s))[0]
-                      if s_bname.startswith(bname) and os.path.exists(s):
-                          sub_dest = os.path.join(target_folder, os.path.basename(s))
-                          if not os.path.exists(sub_dest):
-                              shutil.move(s, sub_dest)
-
-              if others or any(os.path.exists(s) for s in subs):
-                  date_folder = datetime.now().strftime("%Y-%m-%d")
-                  target_folder = os.path.join(processed_dir, date_folder)
-                  os.makedirs(target_folder, exist_ok=True)
-                  for o in others:
-                      if os.path.exists(o):
-                          dest_path = os.path.join(target_folder, os.path.basename(o))
-                          if not os.path.exists(dest_path):
-                              shutil.move(o, dest_path)
-                  for s in subs:
-                      if os.path.exists(s):
-                          sub_dest = os.path.join(target_folder, os.path.basename(s))
-                          if not os.path.exists(sub_dest):
-                              shutil.move(s, sub_dest)
-
-              for item in os.listdir(root_dir):
-                  p = os.path.join(root_dir, item)
-                  if p != processed_dir:
-                      shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else os.remove(p)
-
-              for item in os.listdir(processed_dir):
-                  folder_path = os.path.join(processed_dir, item)
-                  if not os.path.isdir(folder_path):
-                      continue
-                  
-                  files = sorted([os.path.join(folder_path, f) for f in os.listdir(folder_path)])
-                  total_size = sum(os.path.getsize(f) for f in files)
-                  
-                  if total_size > MAX_FOLDER_SIZE:
-                      part, current_size = 1, 0
-                      current_folder = f"{folder_path}_Part{part}"
-                      os.makedirs(current_folder, exist_ok=True)
-                      for f in files:
-                          f_size = os.path.getsize(f)
-                          if current_size + f_size > MAX_FOLDER_SIZE and current_size > 0:
-                              part += 1
-                              current_folder = f"{folder_path}_Part{part}"
-                              os.makedirs(current_folder, exist_ok=True)
-                              current_size = 0
-                          shutil.move(f, os.path.join(current_folder, os.path.basename(f)))
-                          current_size += f_size
-                      os.rmdir(folder_path)
-
-              log("📦 Compressing sorted folders into ZIP archives...")
-              for item in os.listdir(processed_dir):
-                  folder_path = os.path.join(processed_dir, item)
-                  if os.path.isdir(folder_path):
-                      log(f"🗜️ Zipping: {item}...")
-                      archive_target = os.path.join(processed_dir, item)
-                      shutil.make_archive(archive_target, 'zip', folder_path)
-                      shutil.rmtree(folder_path)
-
-              for item in os.listdir(processed_dir):
-                  shutil.move(os.path.join(processed_dir, item), os.path.join(root_dir, item))
-              os.rmdir(processed_dir)
-              log("✅ File sorting, splitting & zipping complete!")
-
-          def upload_files(root_dir, token):
-              """Uploads ZIP files directly via cURL with non-JSON guard to prevent crashing."""
-              zip_files = sorted([f for f in os.listdir(root_dir) if f.endswith('.zip')])
-              if not zip_files:
-                  log("⚠️ No ZIP archives found to upload.")
-                  return
-
-              if not token or token == "YOUR_FILEMIRAGE_API_TOKEN_HERE":
-                  log("❌ FILEMIRAGE_API_TOKEN is not set in script! Replace 'YOUR_FILEMIRAGE_API_TOKEN_HERE' with your real API key.")
-                  return
-
-              for file_name in zip_files:
-                  file_path = os.path.join(root_dir, file_name)
-                  file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-
-                  log(f"⬆️ [Filemirage] Uploading: {file_name} ({file_size_mb:.2f} MB)...")
-                  
-                  curl_cmd = [
-                      "curl", "-s", "-i", "-X", "POST",
-                      "https://filemirage.com/api/v1/upload",
-                      "-H", f"Authorization: Bearer {token}",
-                      "-F", f"token={token}",
-                      "-F", f"key={token}",
-                      "-F", f"file=@{file_path}",
-                      "--connect-timeout", "60",
-                      "--retry", "2"
-                  ]
-
-                  try:
-                      res = subprocess.run(curl_cmd, capture_output=True, text=True, timeout=14400)
-                      output = res.stdout.strip()
-                      
-                      # Parse body after HTTP headers
-                      parts = output.split("\r\n\r\n")
-                      body = parts[-1] if len(parts) > 1 else output
-
-                      if res.returncode == 0:
-                          try:
-                              fm_res = json.loads(body)
-                              if fm_res.get('status') == 'success' or fm_res.get('success'):
-                                  link = fm_res.get('url') or fm_res.get('data', {}).get('url')
-                                  log(f"✅ [Filemirage] Success: {link}")
-                              else:
-                                  log(f"⚠️ [Filemirage] Upload Error: {body}")
-                          except json.JSONDecodeError:
-                              log(f"❌ [Filemirage] Server returned HTML/Non-JSON response instead of valid JSON.")
-                              log(f"📄 Full response text:\n{output[:500]}")
-                      else:
-                          log(f"❌ [Filemirage] cURL Error Code {res.returncode}: {res.stderr}")
-                  except subprocess.TimeoutExpired:
-                      log(f"❌ [Filemirage] Upload timed out for {file_name}")
-                  except Exception as e:
-                      log(f"❌ [Filemirage] Exception: {e}")
-
-          if __name__ == "__main__":
-              setup_aria2()
-              download_files()
-              sort_split_and_zip_files(FOLDER_PATH)
-              upload_files(FOLDER_PATH, FILEMIRAGE_API_TOKEN)
-              log("🎉 All tasks completed successfully!")
+          mkdir -p "$FOLDER_PATH"
+          mkdir -p ~/.config/qBittorrent
+          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
+          [LegalNotice]
+          Accepted=true
+          [Preferences]
+          WebUI\Port=8080
+          WebUI\LocalHostAuth=false
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          Queueing\QueueEnabled=true
+          Queueing\MaxActiveDownloads=10
+          Queueing\MaxActiveTorrents=25
           EOF
 
-      - name: Execute Pipeline
-        env:
-          LINK_URL: ${{ github.event.inputs.link_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
-          KILL_URL: ${{ github.event.inputs.kill_url || 'https://pink-script-snap.lovable.app/api/public/page/e112096c-3b3b-4989-af7a-2368643370a0.txt' }}
-          PYTHONUNBUFFERED: "1"
-        run: python runner.py
+          qbittorrent-nox -d
+          sleep 5
+
+          python3 - << 'EOF'
+          import requests, time, os
+          from datetime import datetime
+
+          link_url = os.environ.get('LINK_FETCH_URL')
+          kill_url = os.environ.get('KILL_SWITCH_URL')
+          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          absolute_save_path = os.path.abspath(folder_path)
+
+          added_links = set()
+          update_count = 0
+
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
+
+              # Check Kill Switch
+              if kill_url:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print(f"\n🛑 Global kill switch activated! | {timestamp}")
+                          break
+                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
+                      if targets:
+                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                          for t in res:
+                              if any(tg in t['name'].lower() for tg in targets if tg):
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+                  except Exception: pass
+
+              # Add New Torrent/Magnet Links
+              if link_url:
+                  try:
+                      page = requests.get(link_url, timeout=5).text
+                      for link in page.splitlines():
+                          link = link.strip()
+                          if link and not link.startswith('#') and link not in added_links:
+                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              added_links.add(link)
+                  except Exception: pass
+
+              # Monitor Progress
+              try:
+                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                  print(f"🔄 Progress Update #{update_count} | {timestamp}")
+                  if not res:
+                      print("📥 Waiting for active torrents...")
+                      all_done = False
+                  else:
+                      all_done = True
+                      for t in res:
+                          prog = int(t.get('progress', 0) * 100)
+                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                          eta_str = fmt_eta(t.get('eta', -1))
+                          print(f"📥 {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                          if prog < 100: all_done = False
+                  if all_done and res: break
+              except Exception: pass
+              time.sleep(10)
+          EOF
+
+          pkill qbittorrent-nox || true
+          sleep 2
+
+      - name: Smart Zipping & Splitting
+        run: |
+          python3 - << 'EOF'
+          import os, shutil, subprocess
+
+          root_dir = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+          media_ext = video_ext + sub_ext
+          max_size_bytes = 7000 * 1024 * 1024
+
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+
+          if os.path.exists(root_dir):
+              for item in os.listdir(root_dir):
+                  item_path = os.path.join(root_dir, item)
+                  if os.path.isdir(item_path):
+                      videos = [
+                          f for r, _, files in os.walk(item_path)
+                          for f in files if f.lower().endswith(video_ext)
+                      ]
+                      
+                      if len(videos) > 3:
+                          zip_name = f"{item}.zip"
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(root_dir)
+                          if folder_size > max_size_bytes:
+                              subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                          else:
+                              subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
+                      else:
+                          for r, _, files in os.walk(item_path):
+                              for f in files:
+                                  if f.lower().endswith(media_ext):
+                                      dst = os.path.join(root_dir, f)
+                                      if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                          shutil.rmtree(item_path, ignore_errors=True)
+          EOF
+
+      - name: Upload to Filemirage
+        run: |
+          echo "Fetching Filemirage server..."
+          SERVER_RESPONSE=$(curl -s https://filemirage.com/api/servers)
+          SERVER=$(echo "$SERVER_RESPONSE" | jq -r '.data.server // empty')
+          
+          if [ -z "$SERVER" ] || [ "$SERVER" == "null" ]; then
+              echo "❌ Error: Could not fetch a valid Filemirage server URL from API."
+              echo "API Output: $SERVER_RESPONSE"
+              exit 1
+          fi
+          echo "🌐 Target Server: $SERVER"
+
+          if [ ! -d "$FOLDER_PATH" ]; then
+              echo "❌ Error: Folder $FOLDER_PATH does not exist."
+              exit 1
+          fi
+
+          # Process substitution avoids subshell isolation so exit 1 halts GitHub Actions
+          while IFS= read -r -d '' FILE; do
+              if [[ "$FILE" == *".!qB"* || "$FILE" == *".part"* ]]; then continue; fi
+              FILENAME=$(basename "$FILE")
+              echo "📤 Uploading: $FILENAME..."
+              
+              # Capture both the response body and the HTTP status code
+              RESPONSE=$(curl -s -w "\n%{http_code}" \
+                  -H "Authorization: Bearer ${{ env.FILEMIRAGE_API_TOKEN }}" \
+                  -F "file=@$FILE;filename=$FILENAME" \
+                  "$SERVER/upload.php")
+              
+              HTTP_STATUS=$(echo "$RESPONSE" | tail -n1)
+              BODY=$(echo "$RESPONSE" | sed '$d')
+              
+              echo "Response: $BODY"
+              
+              # Validate HTTP status and check body for API level errors
+              if [[ "$HTTP_STATUS" =~ ^(200|201)$ ]] && [[ "$BODY" != *"\"error\""* && "$BODY" != *"\"status\":4"* ]]; then
+                  echo "✅ Successfully uploaded: $FILENAME"
+              else
+                  echo "❌ Failed to upload $FILENAME (HTTP Status: $HTTP_STATUS)"
+                  exit 1
+              fi
+          done < <(find "$FOLDER_PATH" -type f -print0 | sort -z)
