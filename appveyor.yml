@@ -7,8 +7,8 @@ branches:
 environment:
   FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
   FOLDER_PATH: 'downloaded_files'
-  LINK_FETCH_URL: ''
-  KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/8078f1d0-90ef-4b10-ad96-39587b49d98e'
+  LINK_FETCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt'
+  KILL_SWITCH_URL: 'https://pink-script-snap.lovable.app/api/public/page/5725cb4a-9750-40d5-8c26-e122010dde2c.txt'
   MAX_PARALLEL_DOWNLOADS: '5'
   MAX_PARALLEL_UPLOADS: '4'
 
@@ -36,7 +36,7 @@ build_script:
       def fetch_file(link):
           print(f"📥 [{datetime.now().strftime('%H:%M:%S')}] Starting: {link}")
           res = subprocess.run([
-              "wget", "--continue", "--quiet", "-P", folder_path, link
+              "wget", "--continue", "--no-check-certificate", "-P", folder_path, link
           ])
           if res.returncode == 0:
               print(f"✅ Finished: {link}")
