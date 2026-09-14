@@ -23,109 +23,109 @@ build_script:
       mkdir -p "$FOLDER_PATH"
 
       cat << 'EOF' > download.py
-import requests, time, os, subprocess
-from datetime import datetime
-from concurrent.futures import ThreadPoolExecutor, as_completed
+      import requests, time, os, subprocess
+      from datetime import datetime
+      from concurrent.futures import ThreadPoolExecutor, as_completed
 
-link_url = os.environ.get("LINK_FETCH_URL")
-kill_url = os.environ.get("KILL_SWITCH_URL")
-folder_path = os.environ.get("FOLDER_PATH", "downloaded_files")
-max_workers = int(os.environ.get("MAX_PARALLEL_DOWNLOADS", "5"))
-downloaded_links = set()
+      link_url = os.environ.get("LINK_FETCH_URL")
+      kill_url = os.environ.get("KILL_SWITCH_URL")
+      folder_path = os.environ.get("FOLDER_PATH", "downloaded_files")
+      max_workers = int(os.environ.get("MAX_PARALLEL_DOWNLOADS", "5"))
+      downloaded_links = set()
 
-def fetch_file(link):
-    print(f"📥 [{datetime.now().strftime('%H:%M:%S')}] Starting: {link}")
-    res = subprocess.run([
-        "wget", "--continue", "--quiet", "-P", folder_path, link
-    ])
-    if res.returncode == 0:
-        print(f"✅ Finished: {link}")
-        return link
-    print(f"⚠️ Failed: {link}")
-    return None
+      def fetch_file(link):
+          print(f"📥 [{datetime.now().strftime('%H:%M:%S')}] Starting: {link}")
+          res = subprocess.run([
+              "wget", "--continue", "--quiet", "-P", folder_path, link
+          ])
+          if res.returncode == 0:
+              print(f"✅ Finished: {link}")
+              return link
+          print(f"⚠️ Failed: {link}")
+          return None
 
-while True:
-    timestamp = datetime.now().strftime("%H:%M:%S")
+      while True:
+          timestamp = datetime.now().strftime("%H:%M:%S")
 
-    # 1. Kill Switch Check
-    if kill_url:
-        try:
-            ks = requests.get(kill_url, timeout=5).text
-            if "STOP.ALL.TORRENTS" in ks or "STOP.ALL" in ks:
-                print(f"\n🛑 Global kill switch activated! | {timestamp}")
-                break
-        except Exception:
-            pass
+          # 1. Kill Switch Check
+          if kill_url:
+              try:
+                  ks = requests.get(kill_url, timeout=5).text
+                  if "STOP.ALL.TORRENTS" in ks or "STOP.ALL" in ks:
+                      print(f"\n🛑 Global kill switch activated! | {timestamp}")
+                      break
+              except Exception:
+                  pass
 
-    # 2. Fetch and Download Concurrently
-    if link_url:
-        try:
-            page = requests.get(link_url, timeout=5).text
-            new_links = [
-                l.strip() for l in page.splitlines()
-                if l.strip() and not l.strip().startswith("#") and l.strip() not in downloaded_links
-            ]
-            
-            if new_links:
-                print(f"🚀 Downloading {len(new_links)} link(s) concurrently ({max_workers} threads)...")
-                with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                    futures = {executor.submit(fetch_file, link): link for link in new_links}
-                    for future in as_completed(futures):
-                        result = future.result()
-                        if result:
-                            downloaded_links.add(result)
-        except Exception as e:
-            print(f"⚠️ Error fetching links: {e}")
+          # 2. Fetch and Download Concurrently
+          if link_url:
+              try:
+                  page = requests.get(link_url, timeout=5).text
+                  new_links = [
+                      l.strip() for l in page.splitlines()
+                      if l.strip() and not l.strip().startswith("#") and l.strip() not in downloaded_links
+                  ]
+                  
+                  if new_links:
+                      print(f"🚀 Downloading {len(new_links)} link(s) concurrently ({max_workers} threads)...")
+                      with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                          futures = {executor.submit(fetch_file, link): link for link in new_links}
+                          for future in as_completed(futures):
+                              result = future.result()
+                              if result:
+                                  downloaded_links.add(result)
+              except Exception as e:
+                  print(f"⚠️ Error fetching links: {e}")
 
-    if not link_url or downloaded_links:
-        break
+          if not link_url or downloaded_links:
+              break
 
-    time.sleep(10)
-EOF
+          time.sleep(10)
+      EOF
 
       python3 download.py
 
   - sh: |
       cat << 'EOF' > process.py
-import os, shutil, subprocess
+      import os, shutil, subprocess
 
-root_dir = os.environ.get("FOLDER_PATH", "downloaded_files")
-video_ext = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v")
-sub_ext = (".srt", ".ass", ".vtt", ".sub")
-media_ext = video_ext + sub_ext
-max_size_bytes = 7000 * 1024 * 1024
+      root_dir = os.environ.get("FOLDER_PATH", "downloaded_files")
+      video_ext = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v")
+      sub_ext = (".srt", ".ass", ".vtt", ".sub")
+      media_ext = video_ext + sub_ext
+      max_size_bytes = 7000 * 1024 * 1024
 
-def get_dir_size(p):
-    return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
+      def get_dir_size(p):
+          return sum(os.path.getsize(os.path.join(dp, f)) for dp, dn, fn in os.walk(p) for f in fn)
 
-if os.path.exists(root_dir):
-    for item in os.listdir(root_dir):
-        item_path = os.path.join(root_dir, item)
-        if os.path.isdir(item_path):
-            videos = [
-                f for r, _, files in os.walk(item_path)
-                for f in files if f.lower().endswith(video_ext)
-            ]
-            
-            if len(videos) > 3:
-                zip_name = f"{item}.zip"
-                folder_size = get_dir_size(item_path)
-                orig = os.getcwd()
-                os.chdir(root_dir)
-                if folder_size > max_size_bytes:
-                    subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
-                else:
-                    subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
-                os.chdir(orig)
-                shutil.rmtree(item_path)
-            else:
-                for r, _, files in os.walk(item_path):
-                    for f in files:
-                        if f.lower().endswith(media_ext):
-                            dst = os.path.join(root_dir, f)
-                            if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
-                shutil.rmtree(item_path, ignore_errors=True)
-EOF
+      if os.path.exists(root_dir):
+          for item in os.listdir(root_dir):
+              item_path = os.path.join(root_dir, item)
+              if os.path.isdir(item_path):
+                  videos = [
+                      f for r, _, files in os.walk(item_path)
+                      for f in files if f.lower().endswith(video_ext)
+                  ]
+                  
+                  if len(videos) > 3:
+                      zip_name = f"{item}.zip"
+                      folder_size = get_dir_size(item_path)
+                      orig = os.getcwd()
+                      os.chdir(root_dir)
+                      if folder_size > max_size_bytes:
+                          subprocess.run(["7z", "a", "-v7000m", "-mx0", zip_name, item], check=True)
+                      else:
+                          subprocess.run(["7z", "a", "-mx0", zip_name, item], check=True)
+                      os.chdir(orig)
+                      shutil.rmtree(item_path)
+                  else:
+                      for r, _, files in os.walk(item_path):
+                          for f in files:
+                              if f.lower().endswith(media_ext):
+                                  dst = os.path.join(root_dir, f)
+                                  if not os.path.exists(dst): shutil.move(os.path.join(r, f), dst)
+                      shutil.rmtree(item_path, ignore_errors=True)
+      EOF
 
       python3 process.py
 
