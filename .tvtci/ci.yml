@@ -1,0 +1,50 @@
+version: 1
+name: linux-test-pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+      - 'features/**'
+  pull_request:
+
+env:
+  NODE_ENV: "test"
+  SOME_SECRET: ${{ secrets.SOME_SECRET }}
+
+jobs:
+  test:
+    builder:
+      - ubuntu
+      - node
+    steps:
+      - uses: checkout
+      - name: Install dependencies
+        run: npm install
+      - name: Lint
+        run: npm run lint
+      - name: Run tests
+        run: npm test
+
+  build:
+    requires:
+      - test
+    builder:
+      - ubuntu
+      - node
+    steps:
+      - uses: checkout
+      - name: Build app
+        run: npm run build
+
+  deploy:
+    requires:
+      - build
+    builder:
+      - ubuntu
+    steps:
+      - uses: checkout
+      - name: Deploy
+        run: ./deploy.sh
+        working-directory: ./
