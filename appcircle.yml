@@ -1,6 +1,3 @@
-# Appcircle Build Configuration File
-# Save this file as appcircle.yml in your repository root
-
 environment:
   machine:
     type: "linux.medium"
