@@ -1,21 +1,27 @@
-environment:
-  machine:
-    type: "linux.medium"
+integration:
+  name: "Download Torrent and Upload to Pixeldrain"
+  description: "Downloads torrents/links, zips content, and uploads to Pixeldrain"
 
-steps:
-  - name: Install Dependencies
+# Appcircle workflow step triggers
+workflow:
+  - name: "Prepare Environment & Dependencies"
     script: |
-      #!/bin/bash
+      #!/usr/bin/env bash
+      set -e
+
       echo "📦 Installing dependencies (7-zip, aria2, Python3)..."
-      sudo apt-get update -qq
-      sudo apt-get install -y -qq p7zip-full aria2 python3 python3-requests python3-pip curl
+      sudo apt update -qq
+      sudo apt install -y -qq p7zip-full aria2 python3 python3-requests python3-pip curl
       pip3 install --no-cache-dir --break-system-packages magnet2torrent requests
 
-  - name: Process Torrent & Direct Links
+  - name: "Process Links & Convert Magnets"
     script: |
-      #!/bin/bash
+      #!/usr/bin/env bash
+      set -e
+
       echo "🧲 Processing links (Converting magnets & Queuing direct links)..."
       mkdir -p downloads torrents
+
       python3 - << 'EOF'
       import asyncio
       import os
@@ -80,9 +86,11 @@ steps:
       asyncio.run(main())
       EOF
 
-  - name: Download Files via Aria2
+  - name: "Download Torrents & Direct Links"
     script: |
-      #!/bin/bash
+      #!/usr/bin/env bash
+      set -e
+
       echo "🚀 Starting max-speed concurrent aria2c downloads..."
       python3 -u - << 'EOF'
       import os
@@ -243,9 +251,11 @@ steps:
       asyncio.run(main())
       EOF
 
-  - name: Zip & Package Downloads
+  - name: "Sanitize & Group Zip"
     script: |
-      #!/bin/bash
+      #!/usr/bin/env bash
+      set -e
+
       echo "📦 Sanitizing file names & Running Multi-Threaded Auto-Group Zipping..."
       python3 - << 'EOF'
       import os, shutil, subprocess, re
@@ -368,9 +378,11 @@ steps:
           shutil.rmtree(r, ignore_errors=True)
       EOF
 
-  - name: Upload to Pixeldrain
+  - name: "Upload to Pixeldrain"
     script: |
-      #!/bin/bash
+      #!/usr/bin/env bash
+      set -e
+
       echo "📤 Running Parallel Multi-Threaded Uploads to Pixeldrain..."
       python3 - << 'EOF'
       import os
@@ -379,8 +391,8 @@ steps:
       import fcntl
       from concurrent.futures import ThreadPoolExecutor
 
-      # Environment variable or hardcoded fallback
-      PIXELDRAIN_API_KEY = os.environ.get("PIXELDRAIN_API_KEY", "YOUR_PIXELDRAIN_API_KEY_HERE")
+      # Automatically read API key from Appcircle Environment Variable or fallback
+      PIXELDRAIN_API_KEY = os.getenv("PIXELDRAIN_API_KEY", "YOUR_PIXELDRAIN_API_KEY_HERE")
       FOLDER_PATH = 'downloads'
 
       def upload_single_file(file_path):
