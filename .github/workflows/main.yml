@@ -27,7 +27,7 @@ jobs:
           mkdir -p downloads
           
           # Replace the URL below with your Google Drive folder link
-          GDRIVE_URL="https://drive.google.com/drive/u/0/mobile/folders/15r57stlzFElmRB1tnrB8qI2N81PUIzRx?usp=sharing"
+          GDRIVE_URL="https://drive.google.com/drive/u/0/mobile/folders/1jO8x62CD-DKnjDI5yBjCIs42YjsJqAdC?usp=sharing"
           
           gdown --folder "$GDRIVE_URL" -O downloads/
 
