@@ -25,7 +25,7 @@ jobs:
           # Replace the URL below with your Google Drive folder link
           GDRIVE_URL="https://drive.google.com/drive/u/0/mobile/folders/18BFCDHxnFnqsqUy4sYDnKUuom99S47xa?usp=sharing"
           
-          gdown --folder "$GDRIVE_URL" -O downloads/ --remaining-ok
+          python3 -m gdown --folder "$GDRIVE_URL" -O downloads/ --remaining-ok
 
       - name: Upload to Gofile
         env:
