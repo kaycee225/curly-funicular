@@ -3,8 +3,6 @@ name: Download Torrent and Upload to Filemirage
 jobs:
   download_zip_upload:
     name: Download, Zip and Upload Files
-    type: custom
-    runs-on: linux-medium
     steps:
       - uses: eas/checkout
 
