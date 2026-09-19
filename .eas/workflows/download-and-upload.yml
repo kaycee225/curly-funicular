@@ -19,21 +19,343 @@ jobs:
         run: |
           mkdir -p downloads torrents
           python3 -u -c '
-          import asyncio, os, requests
+          import asyncio, os, requests, time
           from urllib.parse import urlparse
           from magnet2torrent import Magnet2Torrent
 
           link_url = "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt"
 
+          async def resolve_magnet_with_progress(link):
+              print(f"📥 Resolving magnet metadata...", flush=True)
+              m2t = Magnet2Torrent(link)
+              task = asyncio.create_task(m2t.retrieve_torrent())
+              start_time = time.time()
+              while not task.done():
+                  await asyncio.sleep(2)
+                  elapsed = int(time.time() - start_time)
+                  print(f"   ⏳ Fetching magnet metadata... ({elapsed}s elapsed)", flush=True)
+              return await task
+
+          def download_http_with_progress(url, dest_path):
+              print(f"📥 Starting direct HTTP download: {url[:60]}...", flush=True)
+              res = requests.get(url, stream=True, timeout=30)
+              res.raise_for_status()
+              total_size = int(res.headers.get("content-length", 0))
+              downloaded = 0
+              start_time = time.time()
+              last_log_time = start_time
+
+              with open(dest_path, "wb") as f:
+                  for chunk in res.iter_content(chunk_size=1024 * 512):
+                      if chunk:
+                          f.write(chunk)
+                          downloaded += len(chunk)
+                          current_time = time.time()
+                          if current_time - last_log_time >= 3 or (total_size and downloaded == total_size):
+                              elapsed = max(current_time - start_time, 0.001)
+                              speed_mb = (downloaded / (1024 * 1024)) / elapsed
+                              if total_size:
+                                  pct = (downloaded / total_size) * 100
+                                  print(f"   📊 Progress: {pct:.1f}% ({downloaded / (1024*1024):.2f}MB / {total_size / (1024*1024):.2f}MB) @ {speed_mb:.2f} MB/s", flush=True)
+                              else:
+                                  print(f"   📊 Downloaded: {downloaded / (1024*1024):.2f}MB @ {speed_mb:.2f} MB/s", flush=True)
+                              last_log_time = current_time
+
           async def main():
               print("🔗 Fetching links from endpoint...", flush=True)
               try:
                   res = requests.get(link_url, timeout=15)
-                  print(f"📡 Response Status Code: {res.status_code}", flush=True)
                   ks = res.text
-                  print(f"📄 Response Content Length: {len(ks)} chars", flush=True)
 
                   if "STOP.ALL.TORRENTS" in ks:
+                      print("🛑 Global kill switch active.", flush=True)
+                      return
+                      
+                  direct_links = []
+                  lines = [l.strip() for l in ks.splitlines() if l.strip()]
+                  
+                  for i, link in enumerate(lines):
+                      if link and not link.startswith("#") and not link.endswith(" NO"):
+                          if link.startswith("magnet:"):
+                              print(f"\n[Magnet {i+1}/{len(lines)}]", flush=True)
+                              try:
+                                  filename, torrent_data = await asyncio.wait_for(resolve_magnet_with_progress(link), timeout=35)
+                                  torrent_path = os.path.join("torrents", f"{filename}.torrent")
+                                  with open(torrent_path, "wb") as f:
+                                      f.write(torrent_data)
+                                  print(f"✅ Saved torrent: {torrent_path}", flush=True)
+                              except Exception as e:
+                                  print(f"⚠️ Magnet conversion timed out or failed ({e}). Queuing for aria2c fallback!", flush=True)
+                                  direct_links.append(link)
+                          elif link.startswith("http"):
+                              if link.endswith(".torrent"):
+                                  try:
+                                      parsed = urlparse(link)
+                                      filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                      dest_path = os.path.join("torrents", filename)
+                                      download_http_with_progress(link, dest_path)
+                                      print(f"✅ Saved .torrent file: {filename}", flush=True)
+                                  except Exception as e:
+                                      print(f"❌ Failed HTTP torrent download ({e}): {link}", flush=True)
+                              else:
+                                  direct_links.append(link)
+                                  print(f"🔗 Queued direct HTTP link: {link}", flush=True)
+                                  
+                  if direct_links:
+                      with open("direct_links.txt", "w") as f:
+                          f.write("\n".join(direct_links))
+                      print(f"\n💾 Saved {len(direct_links)} direct links/fallback magnets.", flush=True)
+                      
+              except Exception as e:
+                  print(f"❌ Error: {e}", flush=True)
+                  raise e
+
+          asyncio.run(main())
+          '
+
+      - name: Download Files with Aria2
+        run: |
+          python3 -u -c '
+          import os, glob, asyncio, re, time, requests
+
+          def get_best_trackers():
+              fallback_trackers = [
+                  "udp://tracker.openbittorrent.com:80/announce",
+                  "udp://tracker.opentrackr.org:1337/announce",
+                  "udp://tracker.torrent.eu.org:451/announce",
+                  "udp://exodus.desync.com:6969/announce"
+              ]
+              try:
+                  url = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
+                  res = requests.get(url, timeout=5)
+                  if res.status_code == 200:
+                      fetched = [line.strip() for line in res.text.splitlines() if line.strip()]
+                      if fetched: return ",".join(fetched)
+              except Exception: pass
+              return ",".join(fallback_trackers)
+
+          LIVE_TRACKERS = get_best_trackers()
+
+          async def download_target(target, sem, stuck_timeout=25, max_retries=5):
+              async with sem:
+                  target_name = os.path.basename(target)[:40]
+                  for attempt in range(1, max_retries + 1):
+                      print(f"\n📥 [Attempt {attempt}/{max_retries}] Launching download: {target_name}", flush=True)
+                      cmd = [
+                          "aria2c",
+                          "--console-log-level=notice",
+                          "--summary-interval=2",
+                          "--dir=downloads",
+                          "--seed-time=0",
+                          "--file-allocation=none",
+                          "--enable-dht=true",
+                          "--enable-peer-exchange=true",
+                          "--follow-torrent=mem",
+                          "-s16", "-x16",
+                          "--min-split-size=1M",
+                          "--max-connection-per-server=16",
+                          "--bt-max-peers=128",
+                          "--bt-tracker-connect-timeout=5",
+                          "--bt-tracker-timeout=5",
+                          f"--bt-tracker={LIVE_TRACKERS}",
+                          target
+                      ]
+                      proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                      download_started, start_time, last_log_time = False, time.time(), time.time()
+                      
+                      while proc.returncode is None:
+                          try:
+                              line = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
+                              if not line: break
+                              line_str = line.decode("utf-8", errors="ignore").strip()
+                              
+                              if line_str:
+                                  # Match aria2 default progress output line [#xxxxxx 12MiB/100MiB(12%) CN:16 DL:2.5MiB]
+                                  if "[#" in line_str or "DL:" in line_str:
+                                      download_started = True
+                                      if time.time() - last_log_time >= 3:
+                                          print(f"📊 Progress [{target_name}]: {line_str}", flush=True)
+                                          last_log_time = time.time()
+                                          
+                              if not download_started and (time.time() - start_time) > stuck_timeout:
+                                  print(f"⏱️ No active peers/transfer after {stuck_timeout}s. Terminating attempt {attempt}...", flush=True)
+                                  try: proc.kill()
+                                  except Exception: pass
+                                  await proc.wait()
+                                  break
+                          except asyncio.TimeoutError:
+                              if not download_started and (time.time() - start_time) > stuck_timeout:
+                                  print(f"⏱️ Timed out waiting for peers after {stuck_timeout}s. Retrying...", flush=True)
+                                  try: proc.kill()
+                                  except Exception: pass
+                                  await proc.wait()
+                                  break
+                      await proc.wait()
+                      if proc.returncode == 0:
+                          print(f"✅ Download complete: {target_name}", flush=True)
+                          return target
+                  print(f"❌ Download failed after all retries: {target_name}", flush=True)
+                  return None
+
+          async def main():
+              targets = glob.glob("torrents/*.torrent")
+              if os.path.exists("direct_links.txt"):
+                  with open("direct_links.txt", "r") as f:
+                      targets.extend([line.strip() for line in f if line.strip()])
+              if not targets:
+                  print("⚠️ No torrents or links found to download.", flush=True)
+                  return
+              print(f"🚀 Processing {len(targets)} downloads with active progress tracking...", flush=True)
+              os.makedirs("downloads", exist_ok=True)
+              sem = asyncio.Semaphore(16)
+              tasks = [download_target(t, sem) for t in targets]
+              await asyncio.gather(*tasks)
+
+          asyncio.run(main())
+          '
+
+      - name: Group and Zip Files
+        run: |
+          python3 -u -c '
+          import os, shutil, subprocess, re
+          from collections import defaultdict
+
+          folder = "downloads"
+          video_ext = (".mp4", ".mkv", ".avi", ".mov", ".wmv", ".flv", ".webm", ".m4v")
+          media_ext = video_ext + (".srt", ".ass", ".vtt", ".sub")
+          max_bytes = 10000 * 1024 * 1024
+
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
+
+          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
+              group_dir = os.path.join(base_dir, group_name)
+              os.makedirs(group_dir, exist_ok=True)
+              files_to_move = list(file_paths)
+              for p in file_paths:
+                  base_stem = os.path.splitext(p)[0]
+                  for sub_ext in (".srt", ".ass", ".vtt", ".sub"):
+                      sub_file = base_stem + sub_ext
+                      if os.path.exists(sub_file) and sub_file not in files_to_move:
+                          files_to_move.append(sub_file)
+
+              for p in files_to_move:
+                  dst = os.path.join(group_dir, os.path.basename(p))
+                  if p != dst and not os.path.exists(dst): shutil.move(p, dst)
+              
+              folder_size = get_dir_size(group_dir)
+              zip_name = f"{group_name}.zip"
+              orig = os.getcwd()
+              os.chdir(base_dir)
+              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
+              if folder_size > max_bytes_limit:
+                  cmd.insert(2, "-v5900m")
+              subprocess.run(cmd, check=True)
+              os.chdir(orig)
+              shutil.rmtree(group_dir)
+
+          if os.path.exists(folder):
+              for item in os.listdir(folder):
+                  item_path = os.path.join(folder, item)
+                  if os.path.isdir(item_path):
+                      vids = [os.path.join(r, f) for r, _, files in os.walk(item_path) for f in files if f.lower().endswith(video_ext)]
+                      if len(vids) > 3:
+                          print(f"📦 Zipping folder: {item}", flush=True)
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(folder)
+                          zip_name = f"{item}.zip"
+                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
+                          if folder_size > max_bytes: cmd.insert(2, "-v5900m")
+                          subprocess.run(cmd, check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
+
+          all_videos = [os.path.join(r, f) for r, _, files in os.walk(folder) for f in files if f.lower().endswith(video_ext)]
+          series_regex = re.compile(r"(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)")
+          series_groups = defaultdict(list)
+          unmatched_videos = []
+
+          for vid_path in all_videos:
+              vid_name = os.path.basename(vid_path)
+              parent_name = os.path.basename(os.path.dirname(vid_path))
+              match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              if match:
+                  group_key = f"{(match.group(1) or 'Season').strip('. -_').lower()}_S{match.group(2)}"
+                  series_groups[group_key].append(vid_path)
+              else:
+                  unmatched_videos.append(vid_path)
+
+          for group_key, vids in series_groups.items():
+              if len(vids) > 3:
+                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
+                  create_7z_group(first_stem, vids, folder, max_bytes)
+              else:
+                  unmatched_videos.extend(vids)
+
+          if len(unmatched_videos) > 3:
+              first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
+              create_7z_group(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
+
+          for r, dirs, files in os.walk(folder, topdown=False):
+              if r == folder: continue
+              for f in files:
+                  if f.lower().endswith(media_ext):
+                      src, dst = os.path.join(r, f), os.path.join(folder, f)
+                      if not os.path.exists(dst): shutil.move(src, dst)
+              shutil.rmtree(r, ignore_errors=True)
+          '
+
+      - name: Upload Files to Filemirage
+        run: |
+          python3 -u -c '
+          import os, subprocess, requests, time
+          from concurrent.futures import ThreadPoolExecutor
+
+          FILEMIRAGE_API_TOKEN = "9QQH-DGES-CWQZ-FXNV"
+          FOLDER_PATH = "downloads"
+
+          try:
+              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
+              SERVER = srv_res["data"]["server"]
+              print(f"📡 Uploading to server: {SERVER}", flush=True)
+          except Exception as e:
+              print(f"❌ Failed to fetch Filemirage server: {e}", flush=True)
+              exit(1)
+
+          def upload_single_file(file_path):
+              filename = os.path.basename(file_path)
+              size_mb = os.path.getsize(file_path) / (1024 * 1024)
+              print(f"⬆️ [START] Uploading {filename} ({size_mb:.2f} MB)...", flush=True)
+              curl_cmd = [
+                  "curl", "-#", "-X", "POST",
+                  f"{SERVER}/upload.php",
+                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
+                  "-F", f"file=@{file_path}",
+                  "--max-time", "3600"
+              ]
+              proc = subprocess.Popen(curl_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+              while proc.poll() is None:
+                  time.sleep(3)
+                  if proc.poll() is None:
+                      print(f"   ⏳ Uploading in progress: {filename}", flush=True)
+              stdout, stderr = proc.communicate()
+              if proc.returncode == 0:
+                  print(f"✅ Uploaded {filename}", flush=True)
+              else:
+                  print(f"❌ Upload failed for {filename}", flush=True)
+
+          if os.path.exists(FOLDER_PATH):
+              upload_queue = []
+              for root, dirs, files in os.walk(FOLDER_PATH):
+                  for filename in files:
+                      if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
+                          upload_queue.append(os.path.join(root, filename))
+              if upload_queue:
+                  print(f"🚀 Uploading {len(upload_queue)} files in parallel...", flush=True)
+                  with ThreadPoolExecutor(max_workers=4) as executor:
+                      executor.map(upload_single_file, upload_queue)
+          '
                       print("🛑 Global kill switch active.", flush=True)
                       return
                       
