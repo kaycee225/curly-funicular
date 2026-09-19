@@ -19,53 +19,19 @@ jobs:
         run: |
           mkdir -p downloads torrents
           python3 -u -c '
-          import asyncio, os, requests, time
+          import asyncio, os, requests
           from urllib.parse import urlparse
           from magnet2torrent import Magnet2Torrent
 
           link_url = "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt"
 
-          async def resolve_magnet_with_progress(link):
-              print(f"📥 Resolving magnet metadata...", flush=True)
-              m2t = Magnet2Torrent(link)
-              task = asyncio.create_task(m2t.retrieve_torrent())
-              start_time = time.time()
-              while not task.done():
-                  await asyncio.sleep(2)
-                  elapsed = int(time.time() - start_time)
-                  print(f"   ⏳ Fetching magnet metadata... ({elapsed}s elapsed)", flush=True)
-              return await task
-
-          def download_http_with_progress(url, dest_path):
-              print(f"📥 Starting direct HTTP download: {url[:60]}...", flush=True)
-              res = requests.get(url, stream=True, timeout=30)
-              res.raise_for_status()
-              total_size = int(res.headers.get("content-length", 0))
-              downloaded = 0
-              start_time = time.time()
-              last_log_time = start_time
-
-              with open(dest_path, "wb") as f:
-                  for chunk in res.iter_content(chunk_size=1024 * 512):
-                      if chunk:
-                          f.write(chunk)
-                          downloaded += len(chunk)
-                          current_time = time.time()
-                          if current_time - last_log_time >= 3 or (total_size and downloaded == total_size):
-                              elapsed = max(current_time - start_time, 0.001)
-                              speed_mb = (downloaded / (1024 * 1024)) / elapsed
-                              if total_size:
-                                  pct = (downloaded / total_size) * 100
-                                  print(f"   📊 Progress: {pct:.1f}% ({downloaded / (1024*1024):.2f}MB / {total_size / (1024*1024):.2f}MB) @ {speed_mb:.2f} MB/s", flush=True)
-                              else:
-                                  print(f"   📊 Downloaded: {downloaded / (1024*1024):.2f}MB @ {speed_mb:.2f} MB/s", flush=True)
-                              last_log_time = current_time
-
           async def main():
               print("🔗 Fetching links from endpoint...", flush=True)
               try:
                   res = requests.get(link_url, timeout=15)
+                  print(f"📡 Response Status Code: {res.status_code}", flush=True)
                   ks = res.text
+                  print(f"📄 Response Content Length: {len(ks)} chars", flush=True)
 
                   if "STOP.ALL.TORRENTS" in ks:
                       print("🛑 Global kill switch active.", flush=True)
@@ -73,41 +39,44 @@ jobs:
                       
                   direct_links = []
                   lines = [l.strip() for l in ks.splitlines() if l.strip()]
+                  print(f"📊 Found {len(lines)} lines to process.", flush=True)
                   
                   for i, link in enumerate(lines):
                       if link and not link.startswith("#") and not link.endswith(" NO"):
                           if link.startswith("magnet:"):
-                              print(f"\n[Magnet {i+1}/{len(lines)}]", flush=True)
+                              print(f"📥 Converting magnet [{i+1}]: {link[:60]}...", flush=True)
                               try:
-                                  filename, torrent_data = await asyncio.wait_for(resolve_magnet_with_progress(link), timeout=35)
+                                  m2t = Magnet2Torrent(link)
+                                  filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
                                   torrent_path = os.path.join("torrents", f"{filename}.torrent")
                                   with open(torrent_path, "wb") as f:
                                       f.write(torrent_data)
                                   print(f"✅ Saved torrent: {torrent_path}", flush=True)
                               except Exception as e:
-                                  print(f"⚠️ Magnet conversion timed out or failed ({e}). Queuing for aria2c fallback!", flush=True)
+                                  print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for aria2c fallback!", flush=True)
                                   direct_links.append(link)
                           elif link.startswith("http"):
                               if link.endswith(".torrent"):
                                   try:
+                                      tor_data = requests.get(link, timeout=15).content
                                       parsed = urlparse(link)
                                       filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
-                                      dest_path = os.path.join("torrents", filename)
-                                      download_http_with_progress(link, dest_path)
-                                      print(f"✅ Saved .torrent file: {filename}", flush=True)
+                                      with open(os.path.join("torrents", filename), "wb") as tf:
+                                          tf.write(tor_data)
+                                      print(f"✅ Downloaded .torrent file: {filename}", flush=True)
                                   except Exception as e:
-                                      print(f"❌ Failed HTTP torrent download ({e}): {link}", flush=True)
+                                      print(f"❌ Failed to download torrent file ({e}): {link}", flush=True)
                               else:
                                   direct_links.append(link)
-                                  print(f"🔗 Queued direct HTTP link: {link}", flush=True)
+                                  print(f"🔗 Queued direct HTTP download: {link}", flush=True)
                                   
                   if direct_links:
                       with open("direct_links.txt", "w") as f:
                           f.write("\n".join(direct_links))
-                      print(f"\n💾 Saved {len(direct_links)} direct links/fallback magnets.", flush=True)
+                      print(f"💾 Saved {len(direct_links)} direct links to direct_links.txt", flush=True)
                       
               except Exception as e:
-                  print(f"❌ Error: {e}", flush=True)
+                  print(f"❌ Fatal error processing links: {e}", flush=True)
                   raise e
 
           asyncio.run(main())
@@ -136,65 +105,48 @@ jobs:
 
           LIVE_TRACKERS = get_best_trackers()
 
-          async def download_target(target, sem, stuck_timeout=25, max_retries=5):
+          async def download_target(target, sem, stuck_timeout=20, max_retries=5):
               async with sem:
-                  target_name = os.path.basename(target)[:40]
                   for attempt in range(1, max_retries + 1):
-                      print(f"\n📥 [Attempt {attempt}/{max_retries}] Launching download: {target_name}", flush=True)
+                      print(f"📥 [Attempt {attempt}/{max_retries}] Starting: {target[:80]}", flush=True)
                       cmd = [
-                          "aria2c",
-                          "--console-log-level=notice",
-                          "--summary-interval=2",
-                          "--dir=downloads",
-                          "--seed-time=0",
-                          "--file-allocation=none",
-                          "--enable-dht=true",
-                          "--enable-peer-exchange=true",
-                          "--follow-torrent=mem",
-                          "-s16", "-x16",
-                          "--min-split-size=1M",
-                          "--max-connection-per-server=16",
-                          "--bt-max-peers=128",
-                          "--bt-tracker-connect-timeout=5",
-                          "--bt-tracker-timeout=5",
-                          f"--bt-tracker={LIVE_TRACKERS}",
-                          target
+                          "aria2c", "--console-log-level=notice", "--summary-interval=2",
+                          "--dir=downloads", "--seed-time=0", "--file-allocation=none",
+                          "--enable-dht=true", "--enable-peer-exchange=true", "--follow-torrent=mem",
+                          "-s16", "-x16", "--min-split-size=1M", "--max-connection-per-server=16",
+                          "--bt-max-peers=128", "--bt-tracker-connect-timeout=5", "--bt-tracker-timeout=5",
+                          f"--bt-tracker={LIVE_TRACKERS}", target
                       ]
                       proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
-                      download_started, start_time, last_log_time = False, time.time(), time.time()
+                      download_started, start_time = False, time.time()
                       
                       while proc.returncode is None:
                           try:
-                              line = await asyncio.wait_for(proc.stdout.readline(), timeout=1.0)
+                              line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
                               if not line: break
                               line_str = line.decode("utf-8", errors="ignore").strip()
-                              
                               if line_str:
-                                  # Match aria2 default progress output line [#xxxxxx 12MiB/100MiB(12%) CN:16 DL:2.5MiB]
-                                  if "[#" in line_str or "DL:" in line_str:
-                                      download_started = True
-                                      if time.time() - last_log_time >= 3:
-                                          print(f"📊 Progress [{target_name}]: {line_str}", flush=True)
-                                          last_log_time = time.time()
-                                          
-                              if not download_started and (time.time() - start_time) > stuck_timeout:
-                                  print(f"⏱️ No active peers/transfer after {stuck_timeout}s. Terminating attempt {attempt}...", flush=True)
+                                  if not download_started:
+                                      match = re.search(r"\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/", line_str)
+                                      if match and float(match.group(1)) > 0:
+                                          download_started = True
+                                          print(f"🚀 Active transfer: {os.path.basename(target)}", flush=True)
+                              if (time.time() - start_time) > stuck_timeout and not download_started:
+                                  print(f"⏱️ Stuck at 0%. Retrying attempt {attempt}...", flush=True)
                                   try: proc.kill()
                                   except Exception: pass
                                   await proc.wait()
                                   break
                           except asyncio.TimeoutError:
-                              if not download_started and (time.time() - start_time) > stuck_timeout:
-                                  print(f"⏱️ Timed out waiting for peers after {stuck_timeout}s. Retrying...", flush=True)
+                              if (time.time() - start_time) > stuck_timeout and not download_started:
                                   try: proc.kill()
                                   except Exception: pass
                                   await proc.wait()
                                   break
                       await proc.wait()
                       if proc.returncode == 0:
-                          print(f"✅ Download complete: {target_name}", flush=True)
+                          print(f"✅ Download complete: {target[:80]}", flush=True)
                           return target
-                  print(f"❌ Download failed after all retries: {target_name}", flush=True)
                   return None
 
           async def main():
@@ -205,7 +157,6 @@ jobs:
               if not targets:
                   print("⚠️ No torrents or links found to download.", flush=True)
                   return
-              print(f"🚀 Processing {len(targets)} downloads with active progress tracking...", flush=True)
               os.makedirs("downloads", exist_ok=True)
               sem = asyncio.Semaphore(16)
               tasks = [download_target(t, sem) for t in targets]
@@ -309,7 +260,7 @@ jobs:
       - name: Upload Files to Filemirage
         run: |
           python3 -u -c '
-          import os, subprocess, requests, time
+          import os, subprocess, requests, time, fcntl
           from concurrent.futures import ThreadPoolExecutor
 
           FILEMIRAGE_API_TOKEN = "9QQH-DGES-CWQZ-FXNV"
@@ -325,20 +276,9 @@ jobs:
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
-              size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆️ [START] Uploading {filename} ({size_mb:.2f} MB)...", flush=True)
-              curl_cmd = [
-                  "curl", "-#", "-X", "POST",
-                  f"{SERVER}/upload.php",
-                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
-                  "-F", f"file=@{file_path}",
-                  "--max-time", "3600"
-              ]
-              proc = subprocess.Popen(curl_cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-              while proc.poll() is None:
-                  time.sleep(3)
-                  if proc.poll() is None:
-                      print(f"   ⏳ Uploading in progress: {filename}", flush=True)
+              print(f"⬆️ [START] Uploading: {filename}", flush=True)
+              curl_cmd = ["curl", "-X", "POST", f"{SERVER}/upload.php", "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}", "-F", f"file=@{file_path}", "--max-time", "3600"]
+              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
               stdout, stderr = proc.communicate()
               if proc.returncode == 0:
                   print(f"✅ Uploaded {filename}", flush=True)
@@ -352,7 +292,7 @@ jobs:
                       if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
                           upload_queue.append(os.path.join(root, filename))
               if upload_queue:
-                  print(f"🚀 Uploading {len(upload_queue)} files in parallel...", flush=True)
+                  print(f"🚀 Uploading {len(upload_queue)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           '
