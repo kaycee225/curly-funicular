@@ -13,7 +13,7 @@ jobs:
 
       - name: Install Python Packages
         run: |
-          pip3 install --no-cache-dir --break-system-packages magnet2torrent requests
+          pip3 install --no-cache-dir magnet2torrent requests
 
       - name: Process Torrent & HTTP Links
         run: |
