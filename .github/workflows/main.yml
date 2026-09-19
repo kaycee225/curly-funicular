@@ -1,5 +1,4 @@
 name: Download Google Drive Folder and Upload to Gofile
-
 on:
   push:
     branches: Eas
@@ -30,7 +29,7 @@ jobs:
           # Replace the URL below with your Google Drive folder link
           GDRIVE_URL="https://drive.google.com/drive/folders/13wnCL6eyhHEPBckG5wSIXkgTbXxWjy3M"
           
-          gdown --folder "$GDRIVE_URL" -O downloads/ --remaining-ok
+          gdown --folder "$GDRIVE_URL" -O downloads/
 
       - name: Upload to Gofile
         env:
