@@ -8,17 +8,20 @@ import requests
 import subprocess
 from datetime import datetime
 from collections import defaultdict
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor
 from magnet2torrent import Magnet2Torrent
 from natsort import natsorted
 
-GOFILE_TOKEN = os.getenv("GOFILE_TOKEN", "VoTnBsgTAiTqm97X6FmvdmBswsMPl6SG")
-GOFILE_FOLDER_ID = os.getenv("GOFILE_FOLDER_ID", "6af360d4-d348-470b-8d25-40e961cb9565")
+# ENVIRONMENT VARIABLES
+BUZZHEAVIER_ACCOUNT_ID = os.getenv("BUZZHEAVIER_ACCOUNT_ID", os.getenv("BUZZHEAVIER_TOKEN", "FINS3KA5OL68CPW5MEYD"))
+
+# ADD YOUR PARENT ID / DIRECTORY ID HERE 👇
+BUZZHEAVIER_FOLDER_ID = os.getenv("BUZZHEAVIER_FOLDER_ID", "roj8pv25ry0k")
+
 LINK_URL = os.getenv("LINK_URL", "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58")
 
 video_exts = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-sub_exts = ('.srt', '.vtt', '.ass', '.sub')
 ignored_exts = ('.txt', '.nfo', '.jpg', '.jpeg', '.png')
 
 # STEP 1: PROCESS LINKS
@@ -72,14 +75,12 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# STEP 2: ARIA2 DOWNLOADS (STRICT ACTIVE BYTES DETECTION & AUTO RE-ADD)
+# STEP 2: ARIA2 DOWNLOADS
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
         "udp://tracker.opentrackr.org:1337/announce",
-        "udp://tracker.torrent.eu.org:451/announce",
-        "udp://exodus.desync.com:6969/announce",
-        "udp://open.stealth.si:80/announce"
+        "udp://tracker.torrent.eu.org:451/announce"
     ]
     try:
         url = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
@@ -93,7 +94,6 @@ def get_best_trackers():
     return ",".join(fallback_trackers)
 
 def cleanup_target_downloads(target):
-    """Removes partial downloads and .aria2 control files to prepare for a clean re-add."""
     base_name = os.path.splitext(os.path.basename(target))[0]
     for p in glob.glob(os.path.join("downloads", f"{base_name}*")):
         try:
@@ -132,15 +132,13 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     
                     if line_str:
-                        # Check if downloaded bytes > 0 (meaning data transfer actually started)
                         match = re.search(r'\[#\w+\s+([0-9\.]+)\s*([KMGTP]?i?B)/', line_str)
                         if match:
                             downloaded_val = float(match.group(1))
                             if downloaded_val > 0 and not download_started:
                                 download_started = True
-                                print(f"\n🚀 Download active (bytes transferring): {fname} (Attempt {attempt}/{max_retries})", flush=True)
+                                print(f"\n🚀 Download active: {fname} (Attempt {attempt}/{max_retries})", flush=True)
 
-                        # Print status only once active byte transfer is confirmed
                         if download_started and (line_str.startswith('[#') or 'ETA:' in line_str):
                             print(f"📊 [{fname[:25]}] {line_str}", flush=True)
                             
@@ -148,7 +146,6 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                         start_time = time.time()
                         
                     if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⚠️ No bytes transferred in {stuck_timeout}s: {fname}. Removing & re-adding...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
@@ -156,7 +153,6 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                         break
                 except asyncio.TimeoutError:
                     if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⚠️ Timed out waiting for transfer: {fname}. Removing & re-adding...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
@@ -178,7 +174,6 @@ async def run_downloads():
             targets.extend(natsorted([line.strip() for line in f if line.strip()]))
             
     if not targets:
-        print("⚠️ No torrents or links found to download.", flush=True)
         return
 
     trackers = get_best_trackers()
@@ -186,135 +181,150 @@ async def run_downloads():
     tasks = [download_target(t, sem, trackers) for t in targets]
     await asyncio.gather(*tasks)
 
-# STEP 3: SMART FOLDER ORGANIZATION
-def organize_folders():
-    print("📁 Organizing downloaded files into folders...", flush=True)
-    base_folder = "downloads"
-    series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+# STEP 3: USER-PROVIDED AUTO-GROUP ZIPPING
+def zip_and_organize():
+    print("📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting...", flush=True)
+    folder = "downloads"
+    video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+    media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
+    max_bytes = 10000 * 1024 * 1024
 
-    existing_subdirs = [os.path.join(base_folder, d) for d in os.listdir(base_folder) if os.path.isdir(os.path.join(base_folder, d))]
-    protected_dirs = set()
+    def get_dir_size(p):
+        return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
 
-    for subdir in existing_subdirs:
-        vids_in_subdir = [os.path.join(r, f) for r, _, files in os.walk(subdir) for f in files if f.lower().endswith(video_exts)]
-        if len(vids_in_subdir) > 3:
-            protected_dirs.add(subdir)
+    def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
+        group_dir = os.path.join(base_dir, group_name)
+        os.makedirs(group_dir, exist_ok=True)
+        
+        files_to_move = list(file_paths)
+        for p in file_paths:
+            base_stem = os.path.splitext(p)[0]
+            for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
+                sub_file = base_stem + sub_ext
+                if os.path.exists(sub_file) and sub_file not in files_to_move:
+                    files_to_move.append(sub_file)
+
+        for p in files_to_move:
+            dst = os.path.join(group_dir, os.path.basename(p))
+            if p != dst and not os.path.exists(dst):
+                shutil.move(p, dst)
+        
+        folder_size = get_dir_size(group_dir)
+        zip_name = f"{group_name}.zip"
+        orig = os.getcwd()
+        os.chdir(base_dir)
+        cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
+        if folder_size > max_bytes_limit:
+            cmd.insert(2, "-v5900m")
+        subprocess.run(cmd, check=True)
+        os.chdir(orig)
+        shutil.rmtree(group_dir)
+
+    if os.path.exists(folder):
+        for item in natsorted(os.listdir(folder)):
+            item_path = os.path.join(folder, item)
+            if os.path.isdir(item_path):
+                vids = natsorted([
+                    os.path.join(r, f) for r, _, files in os.walk(item_path)
+                    for f in files if f.lower().endswith(video_ext)
+                ])
+                if len(vids) > 3:
+                    print(f"📦 Zipping folder: {item}", flush=True)
+                    folder_size = get_dir_size(item_path)
+                    orig = os.getcwd()
+                    os.chdir(folder)
+                    zip_name = f"{item}.zip"
+                    cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
+                    if folder_size > max_bytes:
+                        cmd.insert(2, "-v5900m")
+                    subprocess.run(cmd, check=True)
+                    os.chdir(orig)
+                    shutil.rmtree(item_path)
 
     all_videos = []
-    for root, _, files in os.walk(base_folder):
-        if any(root.startswith(pdir) for pdir in protected_dirs):
-            continue
+    for r, _, files in os.walk(folder):
         for f in files:
-            if f.lower().endswith(video_exts):
-                all_videos.append(os.path.join(root, f))
+            if f.lower().endswith(video_ext):
+                all_videos.append(os.path.join(r, f))
 
     all_videos = natsorted(all_videos)
+
+    series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+    
     series_groups = defaultdict(list)
-    unmatched_vids = []
+    unmatched_videos = []
 
     for vid_path in all_videos:
-        filename = os.path.basename(vid_path)
-        parent_dir = os.path.basename(os.path.dirname(vid_path))
-        match = series_regex.search(filename) or series_regex.search(parent_dir)
+        vid_name = os.path.basename(vid_path)
+        parent_name = os.path.basename(os.path.dirname(vid_path))
+        match = series_regex.search(vid_name) or series_regex.search(parent_name)
         
         if match:
-            raw_title, s_num = match.group(1) or "Season", match.group(2)
+            raw_title = match.group(1) or "Season"
+            s_num = match.group(2)
             group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
             series_groups[group_key].append(vid_path)
         else:
-            unmatched_vids.append(vid_path)
+            unmatched_videos.append(vid_path)
 
-    leftover_vids = []
     for group_key in natsorted(series_groups.keys()):
         vids = natsorted(series_groups[group_key])
         if len(vids) > 3:
             first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-            target_dir = os.path.join(base_folder, first_stem)
-            os.makedirs(target_dir, exist_ok=True)
-            for v in vids:
-                shutil.move(v, os.path.join(target_dir, os.path.basename(v)))
+            create_7z_group(first_stem, vids, folder, max_bytes)
         else:
-            leftover_vids.extend(vids)
+            unmatched_videos.extend(vids)
 
-    leftover_vids.extend(unmatched_vids)
-    leftover_vids = natsorted(leftover_vids)
+    unmatched_videos = natsorted(unmatched_videos)
 
-    final_leftovers = []
-    for vid in leftover_vids:
-        vid_dir = os.path.dirname(vid)
-        vid_stem = os.path.splitext(os.path.basename(vid))[0]
-        
-        sub_files = [
-            os.path.join(vid_dir, f) for f in os.listdir(vid_dir)
-            if f.lower().startswith(vid_stem.lower()) and f.lower().endswith(sub_exts)
-        ] if os.path.exists(vid_dir) else []
+    if len(unmatched_videos) > 3:
+        first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
+        # 'Batch_' prefix removed to adhere to the naming rule
+        create_7z_group(first_stem, unmatched_videos, folder, max_bytes)
 
-        if sub_files:
-            movie_dir = os.path.join(base_folder, vid_stem)
-            os.makedirs(movie_dir, exist_ok=True)
-            shutil.move(vid, os.path.join(movie_dir, os.path.basename(vid)))
-            for sub in sub_files:
-                shutil.move(sub, os.path.join(movie_dir, os.path.basename(sub)))
-        else:
-            final_leftovers.append(vid)
+    for r, dirs, files in os.walk(folder, topdown=False):
+        if r == folder: continue
+        for f in natsorted(files):
+            if f.lower().endswith(media_ext):
+                src = os.path.join(r, f)
+                dst = os.path.join(folder, f)
+                if not os.path.exists(dst): 
+                    shutil.move(src, dst)
+        shutil.rmtree(r, ignore_errors=True)
 
-    if final_leftovers:
-        date_folder_name = f"Batch_{datetime.now().strftime('%Y-%m-%d')}"
-        batch_dir = os.path.join(base_folder, date_folder_name)
-        os.makedirs(batch_dir, exist_ok=True)
-        for v in final_leftovers:
-            if os.path.exists(v):
-                shutil.move(v, os.path.join(batch_dir, os.path.basename(v)))
-
-# STEP 4: GOFILE UPLOAD (CORRECTED API ENDPOINT & FAIL-SAFE CURL)
-def get_gofile_server():
+# STEP 4: BUZZHEAVIER UPLOAD
+def get_buzzheavier_root_id():
+    if BUZZHEAVIER_FOLDER_ID and BUZZHEAVIER_FOLDER_ID != "YOUR_DIRECTORY_ID_HERE":
+        return BUZZHEAVIER_FOLDER_ID
+    if not BUZZHEAVIER_ACCOUNT_ID:
+        return ""
     try:
-        res = requests.get("https://api.gofile.io/servers", timeout=10).json()
-        if res.get("status") == "ok":
-            data = res.get("data", {})
-            if "servers" in data and isinstance(data["servers"], list) and len(data["servers"]) > 0:
-                return data["servers"][0]["name"]
-            elif "server" in data:
-                return data["server"]
+        url = "https://buzzheavier.com/api/fs"
+        headers = {"Authorization": f"Bearer {BUZZHEAVIER_ACCOUNT_ID}"}
+        res = requests.get(url, headers=headers, timeout=10).json()
+        if "id" in res:
+            return res["id"]
+        elif isinstance(res.get("data"), dict) and "id" in res["data"]:
+            return res["data"]["id"]
     except Exception as e:
-        print(f"⚠️ Failed fetching GoFile server: {e}", flush=True)
-    return "store1"
+        print(f"⚠️ Failed fetching Buzzheavier root directory: {e}", flush=True)
+    return ""
 
-def create_gofile_folder(folder_name, parent_id):
-    if not parent_id or not GOFILE_TOKEN:
-        return parent_id
-    url = "https://api.gofile.io/contents/createFolder"
-    headers = {
-        "Authorization": f"Bearer {GOFILE_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "parentFolderId": parent_id,
-        "folderName": folder_name
-    }
-    try:
-        res = requests.post(url, headers=headers, json=payload, timeout=15).json()
-        if res.get("status") == "ok":
-            new_id = res["data"]["id"]
-            print(f"📂 Created GoFile Folder: '{folder_name}' (ID: {new_id})", flush=True)
-            return new_id
-    except Exception as e:
-        print(f"⚠️ Failed to create folder '{folder_name}' on GoFile: {e}", flush=True)
-    return parent_id
-
-def upload_single_file(file_path, server, folder_id):
+def upload_single_file(file_path, folder_id):
     filename = os.path.basename(file_path)
     size_mb = os.path.getsize(file_path) / (1024 * 1024)
-    print(f"\n⬆️ Uploading: {filename} ({size_mb:.2f} MB)", flush=True)
+    print(f"\n⬆️ Uploading to Buzzheavier: {filename} ({size_mb:.2f} MB)", flush=True)
 
-    # Note: Use uploadfile endpoint and -f flag so non-200 responses fail properly
-    curl_cmd = [
-        "curl", "-f", "-#", "-X", "POST", f"https://{server}.gofile.io/contents/uploadfile",
-        "-H", f"Authorization: Bearer {GOFILE_TOKEN}",
-        "-F", f"file=@{file_path}"
-    ]
+    encoded_filename = quote(filename)
     if folder_id:
-        curl_cmd.extend(["-F", f"folderId={folder_id}"])
+        upload_url = f"https://w.buzzheavier.com/{folder_id}/{encoded_filename}"
+    else:
+        upload_url = f"https://w.buzzheavier.com/{encoded_filename}"
+
+    curl_cmd = ["curl", "-#o", "-", "-T", file_path]
+    if BUZZHEAVIER_ACCOUNT_ID:
+        curl_cmd.extend(["-H", f"Authorization: Bearer {BUZZHEAVIER_ACCOUNT_ID}"])
+    curl_cmd.append(upload_url)
 
     res = subprocess.run(curl_cmd)
     if res.returncode == 0:
@@ -323,37 +333,29 @@ def upload_single_file(file_path, server, folder_id):
         print(f"\n❌ Upload failed for {filename} (curl exit code: {res.returncode})", flush=True)
 
 def run_uploads():
-    print("📤 Running Uploads to GoFile...", flush=True)
-    server = get_gofile_server()
+    print("📤 Running Uploads to Buzzheavier...", flush=True)
+    root_folder_id = get_buzzheavier_root_id()
 
     base_dir = 'downloads'
-    for item in natsorted(os.listdir(base_dir)):
-        item_path = os.path.join(base_dir, item)
+    if not os.path.exists(base_dir):
+        return
 
-        if os.path.isdir(item_path):
-            gf_folder_id = create_gofile_folder(item, GOFILE_FOLDER_ID)
-            upload_files = []
-            
-            for root, _, files in os.walk(item_path):
-                for f in files:
-                    if any(f.lower().endswith(ext) for ext in [".!qb", ".part", ".aria2"]):
-                        continue
-                    if f.lower().endswith(ignored_exts):
-                        continue
-                    upload_files.append(os.path.join(root, f))
-            
-            upload_files = natsorted(upload_files)
-            if upload_files:
-                with ThreadPoolExecutor(max_workers=1) as executor:
-                    executor.map(lambda f: upload_single_file(f, server, gf_folder_id), upload_files)
-
-        elif os.path.isfile(item_path):
-            if any(item.lower().endswith(ext) for ext in [".!qb", ".part", ".aria2"]) or item.lower().endswith(ignored_exts):
+    upload_queue = []
+    for root, _, files in os.walk(base_dir):
+        for f in files:
+            if any(f.lower().endswith(ext) for ext in [".!qb", ".part", ".aria2"]):
                 continue
-            upload_single_file(item_path, server, GOFILE_FOLDER_ID)
+            if f.lower().endswith(ignored_exts):
+                continue
+            upload_queue.append(os.path.join(root, f))
+
+    upload_queue = natsorted(upload_queue)
+    if upload_queue:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            executor.map(lambda f: upload_single_file(f, root_folder_id), upload_queue)
 
 if __name__ == "__main__":
     if asyncio.run(process_links()):
         asyncio.run(run_downloads())
-        organize_folders()
+        zip_and_organize()
         run_uploads()
