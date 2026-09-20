@@ -2,7 +2,6 @@ import os
 import re
 import glob
 import time
-import fcntl
 import shutil
 import asyncio
 import requests
@@ -16,9 +15,7 @@ from natsort import natsorted
 FILEMIRAGE_API_TOKEN = os.getenv("FILEMIRAGE_TOKEN", "9QQH-DGES-CWQZ-FXNV")
 LINK_URL = os.getenv("LINK_URL", "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt")
 
-# ----------------------------------------------------
 # STEP 1: PROCESS LINKS
-# ----------------------------------------------------
 async def process_links():
     print("🧲 Processing links (Converting magnets & Queuing direct links)...", flush=True)
     os.makedirs("downloads", exist_ok=True)
@@ -69,9 +66,7 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# ----------------------------------------------------
 # STEP 2: ARIA2 DOWNLOADS
-# ----------------------------------------------------
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
@@ -149,9 +144,7 @@ async def run_downloads():
     tasks = [download_target(t, sem, trackers) for t in targets]
     await asyncio.gather(*tasks)
 
-# ----------------------------------------------------
 # STEP 3: NATSORT SMART ZIPPING
-# ----------------------------------------------------
 def get_dir_size(p):
     return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
 
@@ -206,9 +199,7 @@ def zip_files():
         first_stem = os.path.splitext(os.path.basename(unmatched[0]))[0]
         create_7z_group(f"Batch_{first_stem}", unmatched, folder, max_bytes)
 
-# ----------------------------------------------------
 # STEP 4: FILEMIRAGE UPLOAD
-# ----------------------------------------------------
 def upload_single_file(file_path, server):
     filename = os.path.basename(file_path)
     print(f"⬆️ Uploading: {filename}", flush=True)
@@ -241,7 +232,6 @@ def run_uploads():
         with ThreadPoolExecutor(max_workers=4) as executor:
             executor.map(lambda f: upload_single_file(f, server), upload_queue)
 
-# MAIN RUNNER EXECUTION
 if __name__ == "__main__":
     if asyncio.run(process_links()):
         asyncio.run(run_downloads())
