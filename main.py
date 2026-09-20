@@ -1,4 +1,4 @@
-import os
+Import os
 import re
 import glob
 import time
@@ -13,7 +13,7 @@ from magnet2torrent import Magnet2Torrent
 from natsort import natsorted
 
 FILEMIRAGE_API_TOKEN = os.getenv("FILEMIRAGE_TOKEN", "9QQH-DGES-CWQZ-FXNV")
-LINK_URL = os.getenv("LINK_URL", "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt")
+LINK_URL = os.getenv("LINK_URL", "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58")
 
 # STEP 1: PROCESS LINKS
 async def process_links():
@@ -237,3 +237,6 @@ if __name__ == "__main__":
         asyncio.run(run_downloads())
         zip_files()
         run_uploads()
+
+
+How to build this as android app on expo.dev
