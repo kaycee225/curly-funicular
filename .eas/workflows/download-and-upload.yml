@@ -2,12 +2,12 @@ name: Run Python script
 
 on:
   workflow_dispatch: {}
-  steps:
-      - uses: eas/checkout@v4
+  
 jobs:
   run_script:
     runs-on: ubuntu-latest
     steps:
+      - uses: eas/checkout@v4
       - name: Install System and Python Dependencies
         run: |
           sudo apt-get update -qq
