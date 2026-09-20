@@ -1,23 +1,18 @@
 image: Visual Studio 2022
 
 environment:
-  # Optional: Override token or link URL here if not hardcoded in the script
+  PYTHONUTF8: 1
+  PYTHONIOENCODING: utf-8
   FILEMIRAGE_TOKEN: "9QQH-DGES-CWQZ-FXNV"
   LINK_URL: "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"
 
 install:
-  # 1. Install aria2 using Chocolatey
   - choco install aria2 -y
-
-  # 2. Ensure Python and Pip are available
   - set PATH=C:\Python311;C:\Python311\Scripts;%PATH%
   - python -m pip install --upgrade pip
-
-  # 3. Install required Python packages
   - pip install requests magnet2torrent natsort
 
-build: off # Disables default build step since this is a pure script execution
+build: off
 
 test_script:
-  # Run your Python script
   - python main.py
