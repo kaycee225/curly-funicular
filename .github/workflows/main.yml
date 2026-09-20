@@ -1,144 +1,341 @@
-name: Download Google Drive Folder and Upload to Gofile
-on:
-  push:
-    branches: Eas
-  workflow_dispatch: {}
+name: Download Torrent and Upload to Filemirage
 
+on:
+ push:
+  branches: newari
+ workflow_dispatch:
+    
 jobs:
   download_and_upload:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 490
+    runs-on: ubuntu-latest
+    
     steps:
-      - name: Checkout repository
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-
-      - name: Install Python Dependencies
+      - name: Install System Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install --no-cache-dir gdown requests natsort
+          sudo apt update -qq
+          sudo apt install -y -qq p7zip-full aria2 python3 python3-requests python3-pip curl
+          pip3 install --no-cache-dir magnet2torrent requests natsort
 
-      - name: Download Google Drive Folder
+      - name: Convert Magnets & Resolve Torrent Files
         run: |
-          mkdir -p downloads
-          
-          # Replace the URL below with your Google Drive folder link
-          GDRIVE_URL="https://drive.google.com/drive/folders/1I3M2S5yIjgioPXYWGyn0OFF6vD7NvWOa?usp=sharing"
-          
-          gdown --folder "$GDRIVE_URL" -O downloads/
+          mkdir -p downloads torrents
+          python3 - << 'EOF'
+          import asyncio
+          import os
+          import requests
+          from urllib.parse import urlparse
+          from magnet2torrent import Magnet2Torrent
 
-      - name: Upload to Gofile
-        env:
-          GOFILE_TOKEN: "CCAoNQI722NEDPWny1OjLID8V1MEZnGS"
-          GOFILE_FOLDER_ID: "2c03ad5c-4986-4c62-92be-1bbdb0d5d90b"
+          link_url = "https://pink-script-snap.lovable.app/api/public/page/15f5797d-4a9f-4f6c-8757-9353e7fb3f47.txt"
+
+          async def main():
+              try:
+                  ks = requests.get(link_url, timeout=10).text
+                  if "STOP.ALL.TORRENTS" in ks:
+                      print("🛑 Global kill switch active.")
+                      return
+                      
+                  direct_links = []
+                  
+                  for i, link in enumerate(ks.splitlines()):
+                      link = link.strip()
+                      if link and not link.startswith('#') and not link.endswith(' NO'):
+                          if link.startswith('magnet:'):
+                              print(f"📥 Converting magnet: {link[:60]}...", flush=True)
+                              try:
+                                  m2t = Magnet2Torrent(link)
+                                  filename, torrent_data = await asyncio.wait_for(m2t.retrieve_torrent(), timeout=30)
+                                  torrent_path = os.path.join("torrents", f"{filename}.torrent")
+                                  with open(torrent_path, "wb") as f:
+                                      f.write(torrent_data)
+                                  print(f"✅ Saved torrent: {torrent_path}")
+                              except Exception as e:
+                                  print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for aria2c fallback!", flush=True)
+                                  direct_links.append(link)
+                          elif link.startswith('http'):
+                              if link.endswith('.torrent'):
+                                  try:
+                                      tor_data = requests.get(link, timeout=15).content
+                                      parsed = urlparse(link)
+                                      filename = os.path.basename(parsed.path) or f"download_{i}.torrent"
+                                      with open(os.path.join('torrents', filename), 'wb') as tf:
+                                          tf.write(tor_data)
+                                      print(f"✅ Downloaded .torrent file: {filename}")
+                                  except Exception as e:
+                                      print(f"❌ Failed to download torrent file ({e}): {link}")
+                              else:
+                                  direct_links.append(link)
+                                  print(f"🔗 Queued direct HTTP download: {link}")
+                                  
+                  if direct_links:
+                      with open('direct_links.txt', 'w') as f:
+                          f.write('\n'.join(direct_links))
+                          
+              except Exception as e:
+                  print(f"Error processing links: {e}")
+
+          asyncio.run(main())
+          EOF
+
+      - name: Download via Aria2c
         run: |
-          python - << 'EOF'
-          import os, requests
+          python3 -u - << 'EOF'
+          import os
+          import glob
+          import asyncio
+          import re
+          import time
+          import requests
+          from natsort import natsorted
+
+          def get_best_trackers():
+              fallback_trackers = [
+                  "udp://tracker.openbittorrent.com:80/announce",
+                  "udp://tracker.opentrackr.org:1337/announce",
+                  "udp://tracker.torrent.eu.org:451/announce",
+                  "udp://exodus.desync.com:6969/announce",
+                  "udp://open.stealth.si:80/announce"
+              ]
+              try:
+                  url = "https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt"
+                  res = requests.get(url, timeout=5)
+                  if res.status_code == 200:
+                      fetched = [line.strip() for line in res.text.splitlines() if line.strip()]
+                      if fetched:
+                          return ",".join(fetched)
+              except Exception:
+                  pass
+              return ",".join(fallback_trackers)
+
+          LIVE_TRACKERS = get_best_trackers()
+
+          async def download_target(target, sem, stuck_timeout=20, max_retries=5):
+              async with sem:
+                  for attempt in range(1, max_retries + 1):
+                      print(f"📥 [Attempt {attempt}/{max_retries}] Starting: {target[:80]}", flush=True)
+                      cmd = [
+                          "aria2c",
+                          "--console-log-level=notice",
+                          "--summary-interval=2",
+                          "--dir=downloads",
+                          "--seed-time=0",
+                          "--file-allocation=none",
+                          "--enable-dht=true",
+                          "--enable-peer-exchange=true",
+                          "--follow-torrent=mem",
+                          "-s16",
+                          "-x16",
+                          "--min-split-size=1M",
+                          "--max-connection-per-server=16",
+                          "--bt-max-peers=128",
+                          "--bt-tracker-connect-timeout=5",
+                          "--bt-tracker-timeout=5",
+                          f"--bt-tracker={LIVE_TRACKERS}",
+                          target
+                      ]
+                      
+                      proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                      download_started = False
+                      start_time = time.time()
+                      last_print_time = time.time()
+                      
+                      while proc.returncode is None:
+                          try:
+                              line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
+                              if not line: break
+                              line_str = line.decode('utf-8', errors='ignore').strip()
+                              
+                              if line_str and not download_started:
+                                  match = re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str)
+                                  if match and float(match.group(1)) > 0:
+                                      download_started = True
+
+                              if line_str.startswith('[#') and time.time() - last_print_time >= 30:
+                                  print(f"📊 Download Progress [{os.path.basename(target)[:30]}]: {line_str}", flush=True)
+                                  last_print_time = time.time()
+
+                              if not download_started and (time.time() - start_time) > stuck_timeout:
+                                  proc.kill()
+                                  await proc.wait()
+                                  break
+
+                          except asyncio.TimeoutError:
+                              if not download_started and (time.time() - start_time) > stuck_timeout:
+                                  proc.kill()
+                                  await proc.wait()
+                                  break
+
+                      await proc.wait()
+                      if proc.returncode == 0:
+                          print(f"✅ Finished: {target[:80]}", flush=True)
+                          return target
+              return None
+
+          async def main():
+              targets = natsorted(glob.glob("torrents/*.torrent"))
+              if os.path.exists("direct_links.txt"):
+                  with open("direct_links.txt", "r") as f:
+                      targets.extend(natsorted([l.strip() for l in f if l.strip()]))
+              if targets:
+                  sem = asyncio.Semaphore(16)
+                  await asyncio.gather(*[download_target(t, sem) for t in targets])
+
+          asyncio.run(main())
+          EOF
+
+      - name: Multi-Threaded Zipping (Independent Splitting)
+        run: |
+          python3 - << 'EOF'
+          import os, shutil, subprocess, re
+          from collections import defaultdict
+          from natsort import natsorted
+
+          folder = "downloads"
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
+          max_bytes = 5500 * 1024 * 1024
+
+          def create_independent_zip_chunks(group_name, file_paths, base_dir, max_bytes_limit):
+              files_to_process = list(file_paths)
+              for p in file_paths:
+                  base_stem = os.path.splitext(p)[0]
+                  for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
+                      sub_file = base_stem + sub_ext
+                      if os.path.exists(sub_file) and sub_file not in files_to_process:
+                          files_to_process.append(sub_file)
+
+              chunks, current_chunk, current_size = [], [], 0
+
+              for f_path in files_to_process:
+                  f_size = os.path.getsize(f_path) if os.path.exists(f_path) else 0
+                  if current_size + f_size > max_bytes_limit and current_chunk:
+                      chunks.append(current_chunk)
+                      current_chunk = [f_path]
+                      current_size = f_size
+                  else:
+                      current_chunk.append(f_path)
+                      current_size += f_size
+
+              if current_chunk:
+                  chunks.append(current_chunk)
+
+              for idx, chunk_files in enumerate(chunks, 1):
+                  chunk_name = f"{group_name}_Part{idx}" if len(chunks) > 1 else group_name
+                  group_dir = os.path.join(base_dir, chunk_name)
+                  os.makedirs(group_dir, exist_ok=True)
+
+                  for p in chunk_files:
+                      dst = os.path.join(group_dir, os.path.basename(p))
+                      if p != dst and os.path.exists(p):
+                          shutil.move(p, dst)
+
+                  zip_name = f"{chunk_name}.zip"
+                  orig = os.getcwd()
+                  os.chdir(base_dir)
+                  subprocess.run(["7z", "a", "-mx0", "-mmt=on", zip_name, chunk_name], check=True)
+                  os.chdir(orig)
+                  shutil.rmtree(group_dir)
+
+          if os.path.exists(folder):
+              for item in natsorted(os.listdir(folder)):
+                  item_path = os.path.join(folder, item)
+                  if os.path.isdir(item_path):
+                      vids = natsorted([os.path.join(r, f) for r, _, files in os.walk(item_path) for f in files if f.lower().endswith(video_ext)])
+                      if len(vids) > 3:
+                          create_independent_zip_chunks(item, vids, folder, max_bytes)
+
+          all_videos = natsorted([os.path.join(r, f) for r, _, files in os.walk(folder) for f in files if f.lower().endswith(video_ext)])
+          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+          series_groups = defaultdict(list)
+          unmatched_videos = []
+
+          for vid_path in all_videos:
+              vid_name = os.path.basename(vid_path)
+              parent_name = os.path.basename(os.path.dirname(vid_path))
+              match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              if match:
+                  series_groups[f"{(match.group(1) or 'Season').strip('. -_').lower()}_S{match.group(2)}"].append(vid_path)
+              else:
+                  unmatched_videos.append(vid_path)
+
+          for group_key in natsorted(series_groups.keys()):
+              vids = natsorted(series_groups[group_key])
+              if len(vids) > 3:
+                  create_independent_zip_chunks(os.path.splitext(os.path.basename(vids[0]))[0], vids, folder, max_bytes)
+              else:
+                  unmatched_videos.extend(vids)
+
+          if len(unmatched_videos) > 3:
+              create_independent_zip_chunks(f"Batch_{os.path.splitext(os.path.basename(unmatched_videos[0]))[0]}", natsorted(unmatched_videos), folder, max_bytes)
+
+          for r, dirs, files in os.walk(folder, topdown=False):
+              if r == folder: continue
+              for f in natsorted(files):
+                  if f.lower().endswith(media_ext):
+                      src, dst = os.path.join(r, f), os.path.join(folder, f)
+                      if not os.path.exists(dst): shutil.move(src, dst)
+              shutil.rmtree(r, ignore_errors=True)
+          EOF
+
+      - name: Parallel Uploads to Filemirage
+        run: |
+          python3 - << 'EOF'
+          import os, subprocess, requests, time, fcntl
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          TOKEN = os.getenv("GOFILE_TOKEN")
-          ROOT_FOLDER_ID = os.getenv("GOFILE_FOLDER_ID")
-          DOWNLOADS_DIR = "downloads"
-          MAX_FOLDER_SIZE = 18 * 1024 * 1024 * 1024  # 18 GB in bytes
+          FILEMIRAGE_API_TOKEN = '9QQH-DGES-CWQZ-FXNV'
+          FOLDER_PATH = 'downloads'
 
-          headers = {"Authorization": f"Bearer {TOKEN}"}
-
-          # Fetch best available server
           try:
-              res = requests.get("https://api.gofile.io/servers", headers=headers, timeout=10).json()
-              if res.get('status') == 'ok' and res['data']['servers']:
-                  server = res['data']['servers'][0]['name']
-              else:
-                  raise Exception("Unable to retrieve an active server.")
+              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
+              SERVER = srv_res['data']['server']
           except Exception as e:
-              print(f"❌ Server discovery error: {e}")
+              print(f"Failed to fetch Filemirage server: {e}")
               exit(1)
 
-          upload_url = f"https://{server}.gofile.io/contents/uploadfile"
-          created_folders = {}
-
-          def create_remote_folder(folder_name, parent_id):
-              cache_key = f"{parent_id}/{folder_name}"
-              if cache_key in created_folders:
-                  return created_folders[cache_key]
+          def upload_single_file(file_path):
+              filename = os.path.basename(file_path)
+              print(f"⬆️ [START] Uploading: {filename}", flush=True)
+              curl_cmd = [
+                  "curl", "-X", "POST",
+                  f"{SERVER}/upload.php",
+                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
+                  "-F", f"file=@{file_path}",
+                  "--max-time", "3600"
+              ]
+              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              fd = proc.stderr.fileno()
+              fcntl.fcntl(fd, fcntl.F_SETFL, fcntl.fcntl(fd, fcntl.F_GETFL) | os.O_NONBLOCK)
               
-              payload = {
-                  "parentFolderId": parent_id,
-                  "folderName": folder_name
-              }
-              res = requests.post("https://api.gofile.io/contents/createFolder", headers=headers, json=payload).json()
-              if res.get('status') == 'ok':
-                  new_id = res['data']['id']
-                  created_folders[cache_key] = new_id
-                  print(f"📁 Created remote folder '{folder_name}' (ID: {new_id})")
-                  return new_id
-              else:
-                  print(f"⚠️ Failed to create folder '{folder_name}': {res}")
-                  return parent_id
+              last_print_time = time.time()
+              buffer = b""
+              while proc.poll() is None:
+                  try:
+                      chunk = proc.stderr.read(1024)
+                      if chunk:
+                          buffer += chunk
+                          if b'\r' in buffer or b'\n' in buffer:
+                              lines = buffer.replace(b'\r', b'\n').split(b'\n')
+                              buffer = lines[-1]
+                              valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
+                              if valid_lines and time.time() - last_print_time >= 30:
+                                  print(f"📤 Progress [{filename[:25]}]: {valid_lines[-1]}", flush=True)
+                                  last_print_time = time.time()
+                  except Exception:
+                      pass
+                  time.sleep(0.5)
 
-          def get_upload_folder_id(file_path, current_part_id):
-              rel_path = os.path.relpath(file_path, DOWNLOADS_DIR)
-              parts = rel_path.split(os.sep)
-              
-              # Start inside the active 18GB split folder
-              target_folder_id = current_part_id
-              if len(parts) > 1:
-                  for folder_name in parts[:-1]:
-                      target_folder_id = create_remote_folder(folder_name, target_folder_id)
-              return target_folder_id
+              stdout, stderr = proc.communicate()
+              if proc.returncode == 0:
+                  print(f"✅ Finished uploading {filename}", flush=True)
 
-          def upload_item(file_info):
-              file_path, target_folder_id = file_info
-              fn = os.path.basename(file_path)
-              print(f"🚀 Uploading {fn}...", flush=True)
-              try:
-                  with open(file_path, 'rb') as f:
-                      files = {'file': (fn, f)}
-                      data = {
-                          'folderId': target_folder_id,
-                          'token': TOKEN
-                      }
-                      res = requests.post(upload_url, files=files, data=data, timeout=3600).json()
-                      if res.get('status') == 'ok':
-                          print(f"✅ Uploaded: {fn}", flush=True)
-                      else:
-                          print(f"❌ Upload failed for {fn}: {res}", flush=True)
-              except Exception as e:
-                  print(f"❌ Error uploading {fn}: {e}", flush=True)
-
-          if os.path.exists(DOWNLOADS_DIR):
-              raw_files = []
-              for root, _, files in os.walk(DOWNLOADS_DIR):
-                  for file in files:
-                      raw_files.append(os.path.join(root, file))
-
-              # Naturally sort files (1, 2, 10 instead of 1, 10, 2)
-              sorted_files = natsorted(raw_files)
-
-              # Chunk files into 18GB buckets and assign split parent folders
-              upload_queue = []
-              part_index = 1
-              current_part_size = 0
-              current_part_id = create_remote_folder(f"Part {part_index}", ROOT_FOLDER_ID)
-
-              for file_path in sorted_files:
-                  file_size = os.path.getsize(file_path)
-
-                  if current_part_size + file_size > MAX_FOLDER_SIZE and current_part_size > 0:
-                      part_index += 1
-                      current_part_size = 0
-                      current_part_id = create_remote_folder(f"Part {part_index}", ROOT_FOLDER_ID)
-
-                  target_id = get_upload_folder_id(file_path, current_part_id)
-                  upload_queue.append((file_path, target_id))
-                  current_part_size += file_size
-
+          if os.path.exists(FOLDER_PATH):
+              upload_queue = [os.path.join(root, filename) for root, dirs, files in os.walk(FOLDER_PATH) for filename in files if not any(ext in filename for ext in [".!qB", ".part", ".aria2"])]
               if upload_queue:
-                  with ThreadPoolExecutor(max_workers=2) as executor:
-                      executor.map(upload_item, upload_queue)
+                  with ThreadPoolExecutor(max_workers=4) as executor:
+                      executor.map(upload_single_file, natsorted(upload_queue))
           EOF
