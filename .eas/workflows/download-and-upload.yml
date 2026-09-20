@@ -1,9 +1,12 @@
 name: Run Python script
+
 on:
   workflow_dispatch: {}
+
 jobs:
   run_script:
     runs-on: ubuntu-latest
+    steps:
       - name: Install System and Python Dependencies
         run: |
           sudo apt-get update -qq
