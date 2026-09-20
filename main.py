@@ -66,7 +66,7 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# STEP 2: ARIA2 DOWNLOADS (LOGS ONLY WHEN ACTIVE TRANSFER STARTS)
+# STEP 2: ARIA2 DOWNLOADS WITH TIMEOUT CLEANUP & CONDITIONAL LOGGING
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
@@ -86,11 +86,22 @@ def get_best_trackers():
         pass
     return ",".join(fallback_trackers)
 
+def cleanup_target_downloads(target):
+    """Removes partial downloads and .aria2 control files for a target."""
+    base_name = os.path.splitext(os.path.basename(target))[0]
+    for p in glob.glob(os.path.join("downloads", f"{base_name}*")):
+        try:
+            if os.path.isfile(p) or os.path.islink(p):
+                os.remove(p)
+            elif os.path.isdir(p):
+                shutil.rmtree(p)
+        except Exception:
+            pass
+
 async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5):
     async with sem:
+        fname = os.path.basename(target)
         for attempt in range(1, max_retries + 1):
-            fname = os.path.basename(target)
-            print(f"\n📥 [Attempt {attempt}/{max_retries}] Initializing download: {fname}", flush=True)
             cmd = [
                 "aria2c", "--console-log-level=notice", "--summary-interval=2",
                 "--dir=downloads", "--seed-time=0", "--file-allocation=none",
@@ -111,17 +122,17 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
             while proc.returncode is None:
                 try:
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
-                    if not line: break
+                    if not line:
+                        break
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     
                     if line_str:
-                        # Detect active data transfer (non-zero speed DL: > 0B)
-                        if not download_started:
-                            if re.search(r'DL:(?!0B\b)[0-9\.]+[KMGTP]?i?B', line_str):
-                                download_started = True
-                                print(f"🚀 Active transfer started for: {fname}", flush=True)
+                        # Log ONLY when active transfer is detected
+                        if not download_started and re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str):
+                            download_started = True
+                            print(f"\n🚀 Download active: {fname} (Attempt {attempt}/{max_retries})", flush=True)
 
-                        # Output status only AFTER active download has actually started
+                        # Output status logs only after transfer is active
                         if download_started and (line_str.startswith('[#') or 'ETA:' in line_str):
                             print(f"📊 [{fname[:25]}] {line_str}", flush=True)
                             
@@ -129,23 +140,27 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                         start_time = time.time()
                         
                     if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⚠️ Transfer stuck starting: {fname}. Retrying...", flush=True)
+                        print(f"⚠️ Timed out waiting for transfer: {fname}. Removing & re-adding...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
+                        cleanup_target_downloads(target)
                         break
                 except asyncio.TimeoutError:
                     if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⚠️ Connection timed out: {fname}.", flush=True)
+                        print(f"⚠️ Timed out waiting for transfer: {fname}. Removing & re-adding...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
+                        cleanup_target_downloads(target)
                         break
 
             await proc.wait()
-            if proc.returncode == 0:
+            if proc.returncode == 0 and download_started:
                 print(f"✅ Download complete: {fname}", flush=True)
                 return target
+            else:
+                cleanup_target_downloads(target)
 
 async def run_downloads():
     print("🚀 Starting aria2c downloads...", flush=True)
