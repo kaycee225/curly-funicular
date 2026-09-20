@@ -237,6 +237,3 @@ if __name__ == "__main__":
         asyncio.run(run_downloads())
         zip_files()
         run_uploads()
-
-
-How to build this as android app on expo.dev
