@@ -3,6 +3,17 @@
     "version": ">= 10.0.0"
   },
   "build": {
+    "production": {
+      "node": "18.18.0",
+      "distribution": "internal",
+      "env": {
+        "FILEMIRAGE_TOKEN": "9QQH-DGES-CWQZ-FXNV",
+        "LINK_URL": "https://pink-script-snap.lovable.app/api/public/page/0e01cfaf-128c-477f-bff1-9dee23822d97.txt"
+      },
+      "android": {
+        "buildType": "apk"
+      }
+    },
     "process-and-upload": {
       "node": "18.18.0",
       "distribution": "internal",
