@@ -66,7 +66,7 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# STEP 2: ARIA2 DOWNLOADS
+# STEP 2: ARIA2 DOWNLOADS WITH LIVE PROGRESS
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
@@ -89,7 +89,8 @@ def get_best_trackers():
 async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5):
     async with sem:
         for attempt in range(1, max_retries + 1):
-            print(f"📥 [Attempt {attempt}/{max_retries}] Starting: {target[:80]}", flush=True)
+            fname = os.path.basename(target)
+            print(f"\n📥 [Attempt {attempt}/{max_retries}] Starting download: {fname}", flush=True)
             cmd = [
                 "aria2c", "--console-log-level=notice", "--summary-interval=2",
                 "--dir=downloads", "--seed-time=0", "--file-allocation=none",
@@ -99,7 +100,11 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                 f"--bt-tracker={trackers}", target
             ]
             
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, 
+                stdout=asyncio.subprocess.PIPE, 
+                stderr=asyncio.subprocess.STDOUT
+            )
             download_started = False
             start_time = time.time()
             
@@ -108,16 +113,27 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
                     if not line: break
                     line_str = line.decode('utf-8', errors='ignore').strip()
-                    if line_str and not download_started and re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str):
-                        download_started = True
-                        print(f"🚀 Download started for: {os.path.basename(target)}", flush=True)
+                    
+                    if line_str:
+                        if not download_started and re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str):
+                            download_started = True
+                            print(f"🚀 Download active for: {fname}", flush=True)
+
+                        if line_str.startswith('[#') or 'ETA:' in line_str:
+                            print(f"📊 [{fname[:25]}] {line_str}", flush=True)
+                            
+                    if download_started:
+                        start_time = time.time()
+                        
                     if not download_started and (time.time() - start_time) > stuck_timeout:
+                        print(f"⚠️ Download stuck trying to start: {fname}. Retrying...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
                         break
                 except asyncio.TimeoutError:
                     if not download_started and (time.time() - start_time) > stuck_timeout:
+                        print(f"⚠️ Download timed out waiting for connection: {fname}.", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
@@ -125,7 +141,7 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
 
             await proc.wait()
             if proc.returncode == 0:
-                print(f"✅ Downloaded: {target[:80]}", flush=True)
+                print(f"✅ Download complete: {fname}", flush=True)
                 return target
 
 async def run_downloads():
@@ -199,18 +215,22 @@ def zip_files():
         first_stem = os.path.splitext(os.path.basename(unmatched[0]))[0]
         create_7z_group(f"Batch_{first_stem}", unmatched, folder, max_bytes)
 
-# STEP 4: FILEMIRAGE UPLOAD
+# STEP 4: FILEMIRAGE UPLOAD WITH LIVE CURL PROGRESS & EXTENSION FILTER
 def upload_single_file(file_path, server):
     filename = os.path.basename(file_path)
-    print(f"⬆️ Uploading: {filename}", flush=True)
+    size_mb = os.path.getsize(file_path) / (1024 * 1024)
+    print(f"\n⬆️ Uploading: {filename} ({size_mb:.2f} MB)", flush=True)
+
     curl_cmd = [
-        "curl", "-X", "POST", f"{server}/upload.php",
+        "curl", "-#", "-X", "POST", f"{server}/upload.php",
         "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
         "-F", f"file=@{file_path}", "--max-time", "3600"
     ]
-    res = subprocess.run(curl_cmd, capture_output=True, text=True)
+    res = subprocess.run(curl_cmd)
     if res.returncode == 0:
-        print(f"✅ Finished uploading {filename}", flush=True)
+        print(f"\n✅ Finished uploading: {filename}", flush=True)
+    else:
+        print(f"\n❌ Upload failed: {filename}", flush=True)
 
 def run_uploads():
     print("📤 Running Uploads to Filemirage...", flush=True)
@@ -221,16 +241,25 @@ def run_uploads():
         print(f"Failed server fetch: {e}")
         return
 
+    ignored_extensions = ('.txt', '.nfo', '.jpg', '.jpeg', '.png')
     upload_queue = []
+
     for root, _, files in os.walk('downloads'):
         for f in files:
-            if not any(ext in f for ext in [".!qB", ".part", ".aria2"]):
-                upload_queue.append(os.path.join(root, f))
+            # Skip aria2 / qBittorrent temp files
+            if any(f.lower().endswith(temp_ext) for temp_ext in [".!qb", ".part", ".aria2"]):
+                continue
+            # Skip txt, nfo, jpg, png files
+            if f.lower().endswith(ignored_extensions):
+                continue
+            upload_queue.append(os.path.join(root, f))
                 
     upload_queue = natsorted(upload_queue)
     if upload_queue:
-        with ThreadPoolExecutor(max_workers=4) as executor:
+        with ThreadPoolExecutor(max_workers=1) as executor:
             executor.map(lambda f: upload_single_file(f, server), upload_queue)
+    else:
+        print("⚠️ No valid files found to upload.", flush=True)
 
 if __name__ == "__main__":
     if asyncio.run(process_links()):
