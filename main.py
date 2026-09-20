@@ -127,12 +127,10 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     
                     if line_str:
-                        # Log ONLY when active transfer is detected
                         if not download_started and re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str):
                             download_started = True
                             print(f"\n🚀 Download active: {fname} (Attempt {attempt}/{max_retries})", flush=True)
 
-                        # Output status logs only after transfer is active
                         if download_started and (line_str.startswith('[#') or 'ETA:' in line_str):
                             print(f"📊 [{fname[:25]}] {line_str}", flush=True)
                             
@@ -233,25 +231,72 @@ def zip_files():
         first_stem = os.path.splitext(os.path.basename(unmatched[0]))[0]
         create_7z_group(f"Batch_{first_stem}", unmatched, folder, max_bytes)
 
-# STEP 4: FILEMIRAGE UPLOAD WITH LIVE CURL PROGRESS & EXTENSION FILTER
-def upload_single_file(file_path, server):
+# STEP 4: PURE PYTHON STREAMING UPLOAD WITH LIVE SPEED MONITOR
+class ProgressStream:
+    """File stream wrapper that tracks upload progress and speed in real-time."""
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.filename = os.path.basename(filepath)
+        self.file = open(filepath, 'rb')
+        self.total_size = os.path.getsize(filepath)
+        self.uploaded = 0
+        self.start_time = time.time()
+        self.last_update = 0
+
+    def read(self, size=-1):
+        chunk = self.file.read(size)
+        if chunk:
+            self.uploaded += len(chunk)
+            now = time.time()
+            if now - self.last_update >= 0.5 or self.uploaded == self.total_size:
+                self.last_update = now
+                elapsed = max(now - self.start_time, 0.001)
+                speed_mbps = (self.uploaded / (1024 * 1024)) / elapsed
+                percent = (self.uploaded / self.total_size) * 100
+                up_mb = self.uploaded / (1024 * 1024)
+                tot_mb = self.total_size / (1024 * 1024)
+                print(
+                    f"\r⬆️ [{self.filename[:20]}] {up_mb:.1f}/{tot_mb:.1f} MB ({percent:.1f}%) | Speed: {speed_mbps:.2f} MB/s",
+                    end="", flush=True
+                )
+        return chunk
+
+    def len(self):
+        return self.total_size
+
+    def close(self):
+        self.file.close()
+
+def upload_single_file_python(file_path, server, session):
     filename = os.path.basename(file_path)
     size_mb = os.path.getsize(file_path) / (1024 * 1024)
-    print(f"\n⬆️ Uploading: {filename} ({size_mb:.2f} MB)", flush=True)
+    print(f"\n⬆️ Starting Python Upload: {filename} ({size_mb:.2f} MB)", flush=True)
 
-    curl_cmd = [
-        "curl", "-#", "-X", "POST", f"{server}/upload.php",
-        "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
-        "-F", f"file=@{file_path}", "--max-time", "3600"
-    ]
-    res = subprocess.run(curl_cmd)
-    if res.returncode == 0:
-        print(f"\n✅ Finished uploading: {filename}", flush=True)
-    else:
-        print(f"\n❌ Upload failed: {filename}", flush=True)
+    stream = ProgressStream(file_path)
+    headers = {
+        "Authorization": f"Bearer {FILEMIRAGE_API_TOKEN}"
+    }
+    
+    try:
+        files = {"file": (filename, stream)}
+        response = session.post(
+            f"{server}/upload.php",
+            headers=headers,
+            files=files,
+            timeout=7200
+        )
+        stream.close()
+        
+        if response.status_code == 200:
+            print(f"\n✅ Upload finished successfully: {filename}", flush=True)
+        else:
+            print(f"\n❌ Upload HTTP failed ({response.status_code}): {filename}", flush=True)
+    except Exception as e:
+        stream.close()
+        print(f"\n❌ Upload error: {filename} ({e})", flush=True)
 
 def run_uploads():
-    print("📤 Running Uploads to Filemirage...", flush=True)
+    print("📤 Running Pure Python Stream Uploads to Filemirage...", flush=True)
     try:
         srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
         server = srv_res['data']['server']
@@ -272,8 +317,14 @@ def run_uploads():
                 
     upload_queue = natsorted(upload_queue)
     if upload_queue:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            executor.map(lambda f: upload_single_file(f, server), upload_queue)
+        # Session reuses HTTP/TCP connections across uploads for max speed
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=3)
+        session.mount("https://", adapter)
+        session.mount("http://", adapter)
+
+        for file_path in upload_queue:
+            upload_single_file_python(file_path, server, session)
     else:
         print("⚠️ No valid files found to upload.", flush=True)
 
