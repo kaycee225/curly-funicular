@@ -72,7 +72,7 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# STEP 2: ARIA2 DOWNLOADS
+# STEP 2: ARIA2 DOWNLOADS (STRICT ACTIVE BYTES DETECTION & AUTO RE-ADD)
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
@@ -93,6 +93,7 @@ def get_best_trackers():
     return ",".join(fallback_trackers)
 
 def cleanup_target_downloads(target):
+    """Removes partial downloads and .aria2 control files to prepare for a clean re-add."""
     base_name = os.path.splitext(os.path.basename(target))[0]
     for p in glob.glob(os.path.join("downloads", f"{base_name}*")):
         try:
@@ -131,10 +132,15 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                     line_str = line.decode('utf-8', errors='ignore').strip()
                     
                     if line_str:
-                        if not download_started and re.search(r'\[#\w+\s+([0-9\.]+)([KMGTP]?i?B)/', line_str):
-                            download_started = True
-                            print(f"\n🚀 Download active: {fname} (Attempt {attempt}/{max_retries})", flush=True)
+                        # Check if downloaded bytes > 0 (meaning data transfer actually started)
+                        match = re.search(r'\[#\w+\s+([0-9\.]+)\s*([KMGTP]?i?B)/', line_str)
+                        if match:
+                            downloaded_val = float(match.group(1))
+                            if downloaded_val > 0 and not download_started:
+                                download_started = True
+                                print(f"\n🚀 Download active (bytes transferring): {fname} (Attempt {attempt}/{max_retries})", flush=True)
 
+                        # Print status only once active byte transfer is confirmed
                         if download_started and (line_str.startswith('[#') or 'ETA:' in line_str):
                             print(f"📊 [{fname[:25]}] {line_str}", flush=True)
                             
@@ -142,7 +148,7 @@ async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5
                         start_time = time.time()
                         
                     if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⚠️ Timed out waiting for transfer: {fname}. Removing & re-adding...", flush=True)
+                        print(f"⚠️ No bytes transferred in {stuck_timeout}s: {fname}. Removing & re-adding...", flush=True)
                         try: proc.kill()
                         except Exception: pass
                         await proc.wait()
@@ -180,13 +186,12 @@ async def run_downloads():
     tasks = [download_target(t, sem, trackers) for t in targets]
     await asyncio.gather(*tasks)
 
-# STEP 3: SMART FOLDER ORGANIZATION (NO ZIPPING)
+# STEP 3: SMART FOLDER ORGANIZATION
 def organize_folders():
     print("📁 Organizing downloaded files into folders...", flush=True)
     base_folder = "downloads"
     series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
 
-    # Rule 2: Check subfolders with > 3 nested videos
     existing_subdirs = [os.path.join(base_folder, d) for d in os.listdir(base_folder) if os.path.isdir(os.path.join(base_folder, d))]
     protected_dirs = set()
 
@@ -195,7 +200,6 @@ def organize_folders():
         if len(vids_in_subdir) > 3:
             protected_dirs.add(subdir)
 
-    # Collect root level video files not in protected subfolders
     all_videos = []
     for root, _, files in os.walk(base_folder):
         if any(root.startswith(pdir) for pdir in protected_dirs):
@@ -220,7 +224,6 @@ def organize_folders():
         else:
             unmatched_vids.append(vid_path)
 
-    # Rule 3: Series with > 3 episodes -> folder named after first video
     leftover_vids = []
     for group_key in natsorted(series_groups.keys()):
         vids = natsorted(series_groups[group_key])
@@ -236,20 +239,17 @@ def organize_folders():
     leftover_vids.extend(unmatched_vids)
     leftover_vids = natsorted(leftover_vids)
 
-    # Rule 1 & Rule 4: Handle standalone movies vs remaining leftovers
     final_leftovers = []
     for vid in leftover_vids:
         vid_dir = os.path.dirname(vid)
         vid_stem = os.path.splitext(os.path.basename(vid))[0]
         
-        # Look for matching subtitle files
         sub_files = [
             os.path.join(vid_dir, f) for f in os.listdir(vid_dir)
             if f.lower().startswith(vid_stem.lower()) and f.lower().endswith(sub_exts)
         ] if os.path.exists(vid_dir) else []
 
         if sub_files:
-            # Movie with subtitle -> dedicated folder named after movie stem
             movie_dir = os.path.join(base_folder, vid_stem)
             os.makedirs(movie_dir, exist_ok=True)
             shutil.move(vid, os.path.join(movie_dir, os.path.basename(vid)))
@@ -258,7 +258,6 @@ def organize_folders():
         else:
             final_leftovers.append(vid)
 
-    # Rule 4: Group leftover series/standalone videos into date folder
     if final_leftovers:
         date_folder_name = f"Batch_{datetime.now().strftime('%Y-%m-%d')}"
         batch_dir = os.path.join(base_folder, date_folder_name)
@@ -267,14 +266,16 @@ def organize_folders():
             if os.path.exists(v):
                 shutil.move(v, os.path.join(batch_dir, os.path.basename(v)))
 
-# STEP 4: GOFILE UPLOAD
+# STEP 4: GOFILE UPLOAD (CORRECTED API ENDPOINT & FAIL-SAFE CURL)
 def get_gofile_server():
     try:
         res = requests.get("https://api.gofile.io/servers", timeout=10).json()
         if res.get("status") == "ok":
-            servers = res["data"]["servers"]
-            if servers:
-                return servers[0]["name"]
+            data = res.get("data", {})
+            if "servers" in data and isinstance(data["servers"], list) and len(data["servers"]) > 0:
+                return data["servers"][0]["name"]
+            elif "server" in data:
+                return data["server"]
     except Exception as e:
         print(f"⚠️ Failed fetching GoFile server: {e}", flush=True)
     return "store1"
@@ -306,8 +307,9 @@ def upload_single_file(file_path, server, folder_id):
     size_mb = os.path.getsize(file_path) / (1024 * 1024)
     print(f"\n⬆️ Uploading: {filename} ({size_mb:.2f} MB)", flush=True)
 
+    # Note: Use uploadfile endpoint and -f flag so non-200 responses fail properly
     curl_cmd = [
-        "curl", "-#", "-X", "POST", f"https://{server}.gofile.io/contents/upload",
+        "curl", "-f", "-#", "-X", "POST", f"https://{server}.gofile.io/contents/uploadfile",
         "-H", f"Authorization: Bearer {GOFILE_TOKEN}",
         "-F", f"file=@{file_path}"
     ]
@@ -318,7 +320,7 @@ def upload_single_file(file_path, server, folder_id):
     if res.returncode == 0:
         print(f"\n✅ Finished uploading: {filename}", flush=True)
     else:
-        print(f"\n❌ Upload failed: {filename}", flush=True)
+        print(f"\n❌ Upload failed for {filename} (curl exit code: {res.returncode})", flush=True)
 
 def run_uploads():
     print("📤 Running Uploads to GoFile...", flush=True)
@@ -329,7 +331,6 @@ def run_uploads():
         item_path = os.path.join(base_dir, item)
 
         if os.path.isdir(item_path):
-            # Create subfolder on GoFile
             gf_folder_id = create_gofile_folder(item, GOFILE_FOLDER_ID)
             upload_files = []
             
