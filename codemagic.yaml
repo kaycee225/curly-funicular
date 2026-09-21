@@ -19,8 +19,8 @@ workflows:
           brew install p7zip libtorrent-rasterbar python3 curl
           
           # Use Homebrew's python explicitly
-          python3 -m pip install --upgrade pip
-          python3 -m pip install --no-cache-dir magnet2torrent requests natsort libtorrent || python3 -m pip install --no-cache-dir magnet2torrent requests natsort
+          python3 -m pip install --break-system-packages --upgrade pip
+          python3 -m pip install --break-system-packages --no-cache-dir magnet2torrent requests natsort libtorrent || python3 -m pip install --no-cache-dir magnet2torrent requests natsort
 
       - name: Processing links
         script: |
