@@ -21,8 +21,13 @@ workflows:
       - name: Processing links
         script: |
           echo "🧲 Processing links (Converting magnets & Queuing direct links)..."
+          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
           mkdir -p downloads torrents 
           python3 - << 'EOF'
+          import sys, glob
+          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
+          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
+
           import asyncio
           import os
           import requests
@@ -83,9 +88,13 @@ workflows:
       - name: Libtorrent downloads
         script: |
           echo "🚀 Starting max-speed concurrent libtorrent downloads..."
+          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
           python3 -u - << 'EOF'
+          import sys, glob
+          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
+          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
+
           import os
-          import glob
           import asyncio
           import time
           import requests
@@ -267,7 +276,12 @@ workflows:
       - name: Zip files
         script: |
           echo "📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting..."
+          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
           python3 - << 'EOF'
+          import sys, glob
+          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
+          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
+
           import os, shutil, subprocess, re
           from collections import defaultdict
           from natsort import natsorted
@@ -383,7 +397,12 @@ workflows:
       - name: Upload to Filemirage
         script: |
           echo "📤 Running Parallel Multi-Threaded Uploads to Filemirage..."
+          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
           python3 - << 'EOF'
+          import sys, glob
+          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
+          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
+
           import os
           import subprocess
           import requests
