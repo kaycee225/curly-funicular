@@ -7,10 +7,9 @@ environment:
   LINK_URL: "https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/eb711bc9-9eab-4a10-b985-bf2f27bc2d58"
 
 install:
-  - choco install aria2 -y
   - set PATH=C:\Python311;C:\Python311\Scripts;%PATH%
   - python -m pip install --upgrade pip
-  - pip install requests magnet2torrent natsort
+  - pip install requests magnet2torrent natsort libtorrent
 
 build: off
 
