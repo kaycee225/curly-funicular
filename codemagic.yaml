@@ -14,20 +14,20 @@ workflows:
       - name: Install dependencies
         script: |
           echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           brew update || true
           brew install p7zip libtorrent-rasterbar python3 curl
-          pip3 install --no-cache-dir magnet2torrent requests natsort || pip3 install --no-cache-dir --break-system-packages magnet2torrent requests natsort
+          
+          # Use Homebrew's python explicitly
+          python3 -m pip install --upgrade pip
+          python3 -m pip install --no-cache-dir magnet2torrent requests natsort libtorrent || python3 -m pip install --no-cache-dir magnet2torrent requests natsort
 
       - name: Processing links
         script: |
           echo "🧲 Processing links (Converting magnets & Queuing direct links)..."
-          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           mkdir -p downloads torrents 
           python3 - << 'EOF'
-          import sys, glob
-          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
-          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
-
           import asyncio
           import os
           import requests
@@ -88,13 +88,10 @@ workflows:
       - name: Libtorrent downloads
         script: |
           echo "🚀 Starting max-speed concurrent libtorrent downloads..."
-          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 -u - << 'EOF'
-          import sys, glob
-          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
-          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
-
           import os
+          import glob
           import asyncio
           import time
           import requests
@@ -276,12 +273,8 @@ workflows:
       - name: Zip files
         script: |
           echo "📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting..."
-          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 - << 'EOF'
-          import sys, glob
-          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
-          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
-
           import os, shutil, subprocess, re
           from collections import defaultdict
           from natsort import natsorted
@@ -397,12 +390,8 @@ workflows:
       - name: Upload to Filemirage
         script: |
           echo "📤 Running Parallel Multi-Threaded Uploads to Filemirage..."
-          export PYTHONPATH="$(find /opt/homebrew/lib /usr/local/lib -type d -name 'site-packages' 2>/dev/null | tr '\n' ':'):$PYTHONPATH"
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           python3 - << 'EOF'
-          import sys, glob
-          sys.path.extend(glob.glob('/opt/homebrew/lib/python3.*/site-packages'))
-          sys.path.extend(glob.glob('/usr/local/lib/python3.*/site-packages'))
-
           import os
           import subprocess
           import requests
