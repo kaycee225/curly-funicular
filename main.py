@@ -6,6 +6,7 @@ import shutil
 import asyncio
 import requests
 import subprocess
+import libtorrent as lt
 from datetime import datetime
 from collections import defaultdict
 from urllib.parse import urlparse, quote
@@ -75,7 +76,7 @@ async def process_links():
         print(f"❌ Error processing links: {e}", flush=True)
         return False
 
-# STEP 2: ARIA2 DOWNLOADS
+# STEP 2: LIBTORRENT DOWNLOADS
 def get_best_trackers():
     fallback_trackers = [
         "udp://tracker.openbittorrent.com:80/announce",
@@ -88,86 +89,76 @@ def get_best_trackers():
         if res.status_code == 200:
             fetched = [line.strip() for line in res.text.splitlines() if line.strip()]
             if fetched:
-                return ",".join(fetched)
+                return fetched
     except Exception:
         pass
-    return ",".join(fallback_trackers)
+    return fallback_trackers
 
-def cleanup_target_downloads(target):
-    base_name = os.path.splitext(os.path.basename(target))[0]
-    for p in glob.glob(os.path.join("downloads", f"{base_name}*")):
-        try:
-            if os.path.isfile(p) or os.path.islink(p):
-                os.remove(p)
-            elif os.path.isdir(p):
-                shutil.rmtree(p)
-        except Exception:
-            pass
+def _download_http_file(url, output_dir="downloads"):
+    filename = os.path.basename(urlparse(url).path) or "downloaded_file"
+    output_path = os.path.join(output_dir, filename)
+    print(f"🚀 Downloading direct link: {url}", flush=True)
+    try:
+        with requests.get(url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(output_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+        print(f"✅ Download complete: {filename}", flush=True)
+        return True
+    except Exception as e:
+        print(f"❌ Direct download failed ({e}): {url}", flush=True)
+        return False
 
-async def download_target(target, sem, trackers, stuck_timeout=20, max_retries=5):
+def _download_torrent_libtorrent(target, extra_trackers):
+    fname = os.path.basename(target)
+    ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
+    params = lt.add_torrent_params()
+    params.save_path = "downloads"
+
+    if target.startswith("magnet:"):
+        params = lt.parse_magnet_uri(target)
+        params.save_path = "downloads"
+        handle = ses.add_torrent(params)
+    else:
+        params.ti = lt.torrent_info(target)
+        handle = ses.add_torrent(params)
+
+    if extra_trackers:
+        for tr in extra_trackers:
+            handle.add_tracker({'url': tr})
+
+    print(f"🚀 Download active: {fname}", flush=True)
+
+    while not handle.status().is_seeding:
+        s = handle.status()
+        name = s.name if s.has_metadata else fname
+        progress = s.progress * 100
+        down_rate = s.download_rate / 1024
+        peers = s.num_peers
+
+        print(f"📊 [{name[:25]}] {progress:.1f}% | Down: {down_rate:.1f} KB/s | Peers: {peers}", flush=True)
+        time.sleep(2)
+
+    print(f"✅ Download complete: {fname}", flush=True)
+    return True
+
+async def download_target(target, sem, trackers):
     async with sem:
         fname = os.path.basename(target)
-        for attempt in range(1, max_retries + 1):
-            cmd = [
-                "aria2c", "--console-log-level=notice", "--summary-interval=2",
-                "--dir=downloads", "--seed-time=0", "--file-allocation=none",
-                "--enable-dht=true", "--enable-peer-exchange=true", "--follow-torrent=mem",
-                "-s16", "-x16", "--min-split-size=1M", "--max-connection-per-server=16",
-                "--bt-max-peers=128", "--bt-tracker-connect-timeout=5", "--bt-tracker-timeout=5",
-                f"--bt-tracker={trackers}", target
-            ]
-            
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, 
-                stdout=asyncio.subprocess.PIPE, 
-                stderr=asyncio.subprocess.STDOUT
-            )
-            download_started = False
-            start_time = time.time()
-            
-            while proc.returncode is None:
-                try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=2.0)
-                    if not line: break
-                    line_str = line.decode('utf-8', errors='ignore').strip()
-                    
-                    if line_str:
-                        match = re.search(r'\[#\w+\s+([0-9\.]+)\s*([KMGTP]?i?B)/', line_str)
-                        if match:
-                            downloaded_val = float(match.group(1))
-                            if downloaded_val > 0 and not download_started:
-                                download_started = True
-                                print(f"\n🚀 Download active: {fname} (Attempt {attempt}/{max_retries})", flush=True)
-
-                        if download_started and (line_str.startswith('[#') or 'ETA:' in line_str):
-                            print(f"📊 [{fname[:25]}] {line_str}", flush=True)
-                            
-                    if download_started:
-                        start_time = time.time()
-                        
-                    if not download_started and (time.time() - start_time) > stuck_timeout:
-                        try: proc.kill()
-                        except Exception: pass
-                        await proc.wait()
-                        cleanup_target_downloads(target)
-                        break
-                except asyncio.TimeoutError:
-                    if not download_started and (time.time() - start_time) > stuck_timeout:
-                        try: proc.kill()
-                        except Exception: pass
-                        await proc.wait()
-                        cleanup_target_downloads(target)
-                        break
-
-            await proc.wait()
-            if proc.returncode == 0 and download_started:
-                print(f"✅ Download complete: {fname}", flush=True)
-                return target
+        try:
+            if target.startswith("http://") or target.startswith("https://"):
+                await asyncio.to_thread(_download_http_file, target, "downloads")
             else:
-                cleanup_target_downloads(target)
+                await asyncio.to_thread(_download_torrent_libtorrent, target, trackers)
+            return target
+        except Exception as e:
+            print(f"❌ Download failed for {fname}: {e}", flush=True)
+            return None
 
 async def run_downloads():
-    print("🚀 Starting aria2c downloads...", flush=True)
+    print("🚀 Starting libtorrent downloads...", flush=True)
     targets = natsorted(glob.glob("torrents/*.torrent"))
     if os.path.exists("direct_links.txt"):
         with open("direct_links.txt", "r") as f:
@@ -279,7 +270,6 @@ def zip_and_organize():
 
     if len(unmatched_videos) > 3:
         first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
-        # 'Batch_' prefix removed to adhere to the naming rule
         create_7z_group(first_stem, unmatched_videos, folder, max_bytes)
 
     for r, dirs, files in os.walk(folder, topdown=False):
