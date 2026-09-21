@@ -27,8 +27,7 @@ jobs:
           mkdir -p downloads
           
           # Replace the URL below with your Google Drive folder link
-          GDRIVE_URL="https://drive.google.com/drive/folders/1I3M2S5yIjgioPXYWGyn0OFF6vD7NvWOa?usp=sharing"
-          
+          GDRIVE_URL="https://drive.google.com/drive/u/0/mobile/folders/13Fds4SPOep2MS4OGDJQQlSvnlLsGQEm0?usp=sharing"          
           gdown --folder "$GDRIVE_URL" -O downloads/
 
       - name: Upload to Gofile
