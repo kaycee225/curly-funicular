@@ -9,7 +9,6 @@ on:
 jobs:
   download_zip_upload:
     name: Download, Zip and Upload Files
-    type: custom
     steps:
       - run: echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
       - run: sudo apt update -qq
@@ -176,7 +175,6 @@ jobs:
                                   prog = s.progress * 100
                                   name = s.name or "metadata_pending"
                                   
-                                  # ETA Calculation logic
                                   remaining_bytes = s.total_wanted - s.total_wanted_done
                                   if remaining_bytes > 0 and s.download_payload_rate > 0:
                                       eta_sec = int(remaining_bytes / s.download_payload_rate)
@@ -252,7 +250,7 @@ jobs:
                   for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
                       sub_file = base_stem + sub_ext
                       if os.path.exists(sub_file) and sub_file not in files_to_mem:
-                          files_to_mem.append(sub_file)
+                      	files_to_mem.append(sub_file)
               for p in files_to_mem:
                   dst = os.path.join(group_dir, os.path.basename(p))
                   if p != dst and not os.path.exists(dst):
