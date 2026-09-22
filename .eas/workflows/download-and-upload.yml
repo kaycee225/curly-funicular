@@ -9,6 +9,7 @@ on:
 jobs:
   download_zip_upload:
     name: Download, Zip and Upload Files
+    type: custom
     steps:
       - run: echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
       - run: sudo apt update -qq
@@ -113,12 +114,10 @@ jobs:
               return fallback_trackers
 
           LIVE_TRACKERS = get_best_trackers()
-
           ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
 
           async def download_target(target, sem, stuck_timeout=25, max_retries=15):
               async with sem:
-                  # Handle HTTP direct links
                   if target.startswith('http') and not target.endswith('.torrent'):
                       print(f"📥 Starting direct HTTP download: {target[:80]}", flush=True)
                       for attempt in range(1, max_retries + 1):
@@ -136,13 +135,10 @@ jobs:
                           except Exception as e:
                               print(f"⚠️ HTTP download failed (Attempt {attempt}): {e}")
                               await asyncio.sleep(2)
-                      print(f"❌ Failed all {max_retries} attempts for HTTP: {target[:80]}", flush=True)
                       return None
 
-                  # Handle Torrents and Magnets
                   for attempt in range(1, max_retries + 1):
                       print(f"📥 [Attempt {attempt}/{max_retries}] Starting torrent: {target[:80]}", flush=True)
-                      
                       handle = None
                       try:
                           if target.startswith('magnet:'):
@@ -165,68 +161,42 @@ jobs:
                               s = handle.status()
                               if s.is_seed:
                                   break
-                                  
-                              if not s.has_metadata:
-                                  pass 
-                              elif s.download_payload_rate > 0 and not download_started:
+                              if s.download_payload_rate > 0 and not download_started:
                                   download_started = True
-                                  print(f"🚀 Download started active transfer for: {s.name or os.path.basename(target)}", flush=True)
+                                  print(f"🚀 Active transfer started for: {s.name or os.path.basename(target)}", flush=True)
                                   
-                              current_time = time.time()
-                              if current_time - last_print_time >= 30:
-                                  state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
-                                  state_name = state_str[s.state] if s.state < len(state_str) else "unknown"
-                                  rate = s.download_payload_rate / 1024
-                                  prog = s.progress * 100
-                                  name = s.name or "metadata_pending"
-                                  print(f"📊 Download Progress [{name[:30]}]: {prog:.2f}% | Rate: {rate:.1f} KiB/s | Peers: {s.num_peers} | State: {state_name}", flush=True)
-                                  last_print_time = current_time
+                              if time.time() - last_print_time >= 30:
+                                  print(f"📊 Progress: {s.progress * 100:.2f}% | Rate: {s.download_payload_rate / 1024:.1f} KiB/s | Peers: {s.num_peers}", flush=True)
+                                  last_print_time = time.time()
                                   
-                              elapsed = time.time() - start_time
-                              if not download_started and elapsed > stuck_timeout:
-                                  print(f"⏱️ Stuck at 0% for {stuck_timeout}s. Terminating attempt {attempt}...", flush=True)
+                              if not download_started and (time.time() - start_time) > stuck_timeout:
+                                  print(f"⏱️ Stuck at 0% for {stuck_timeout}s. Terminating attempt...", flush=True)
                                   break
-                                  
                               await asyncio.sleep(2)
                               
                           if handle.status().is_seed:
                               print(f"✅ Successfully finished: {target[:80]}", flush=True)
                               ses.remove_torrent(handle)
                               return target
-                              
                       except Exception as e:
                           print(f"⚠️ Error on {target[:80]} (Attempt {attempt}): {e}", flush=True)
-                          
                       if handle:
                           ses.remove_torrent(handle)
-                          
-                  print(f"❌ Failed all {max_retries} attempts for: {target[:80]}", flush=True)
                   return None
 
           async def main():
               targets = natsorted(glob.glob("torrents/*.torrent"))
-              
               if os.path.exists("direct_links.txt"):
                   with open("direct_links.txt", "r") as f:
-                      links = [line.strip() for line in f if line.strip()]
-                      targets.extend(natsorted(links))
-                      
+                      targets.extend(natsorted([line.strip() for line in f if line.strip()]))
               if not targets:
-                  print("⚠️ No torrents or links found to download.")
+                  print("⚠️ No torrents or links found.")
                   return
 
               os.makedirs("downloads", exist_ok=True)
               sem = asyncio.Semaphore(16)
-              tasks = [download_target(t, sem) for t in targets]
-              results = await asyncio.gather(*tasks)
-              finished = [r for r in results if r]
-              
-              print("\n====================")
-              print("🎉 FINISHED DOWNLOADS:")
-              print("====================")
-              for item in finished:
-                  print(f"✅ {item[:80]}")
-              print("====================\n")
+              results = await asyncio.gather(*(download_target(t, sem) for t in targets))
+              print("\n🎉 FINISHED DOWNLOADS:", [r for r in results if r])
 
           asyncio.run(main())
           EOF
@@ -249,16 +219,14 @@ jobs:
           def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
               group_dir = os.path.join(base_dir, group_name)
               os.makedirs(group_dir, exist_ok=True)
-              
-              files_to_move = list(file_paths)
+              files_to_mem = list(file_paths)
               for p in file_paths:
                   base_stem = os.path.splitext(p)[0]
                   for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
                       sub_file = base_stem + sub_ext
-                      if os.path.exists(sub_file) and sub_file not in files_to_move:
-                          files_to_move.append(sub_file)
-
-              for p in files_to_move:
+                      if os.path.exists(sub_file) and sub_file not in files_to_mem:
+                          files_to_mem.append(sub_file)
+              for p in files_to_mem:
                   dst = os.path.join(group_dir, os.path.basename(p))
                   if p != dst and not os.path.exists(dst):
                       shutil.move(p, dst)
@@ -278,12 +246,8 @@ jobs:
               for item in natsorted(os.listdir(folder)):
                   item_path = os.path.join(folder, item)
                   if os.path.isdir(item_path):
-                      vids = natsorted([
-                          os.path.join(r, f) for r, _, files in os.walk(item_path)
-                          for f in files if f.lower().endswith(video_ext)
-                      ])
+                      vids = [os.path.join(r, f) for r, _, files in os.walk(item_path) for f in files if f.lower().endswith(video_ext)]
                       if len(vids) > 3:
-                          print(f"📦 Zipping folder: {item}")
                           folder_size = get_dir_size(item_path)
                           orig = os.getcwd()
                           os.chdir(folder)
@@ -295,136 +259,65 @@ jobs:
                           os.chdir(orig)
                           shutil.rmtree(item_path)
 
-          all_videos = []
-          for r, _, files in os.walk(folder):
-              for f in files:
-                  if f.lower().endswith(video_ext):
-                      all_videos.append(os.path.join(r, f))
-
-          all_videos = natsorted(all_videos)
-
+          all_videos = natsorted([os.path.join(r, f) for r, _, files in os.walk(folder) for f in files if f.lower().endswith(video_ext)])
           series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
-          
           series_groups = defaultdict(list)
-          unmatched_videos = []
+          unmatched = []
 
           for vid_path in all_videos:
-              vid_name = os.path.basename(vid_path)
-              parent_name = os.path.basename(os.path.dirname(vid_path))
-              match = series_regex.search(vid_name) or series_regex.search(parent_name)
-              
+              match = series_regex.search(os.path.basename(vid_path)) or series_regex.search(os.path.basename(os.path.dirname(vid_path)))
               if match:
-                  raw_title = match.group(1) or "Season"
-                  s_num = match.group(2)
-                  group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
-                  series_groups[group_key].append(vid_path)
+                  series_groups[f"{(match.group(1) or 'Season').strip('. -_').lower()}_S{match.group(2)}"].append(vid_path)
               else:
-                  unmatched_videos.append(vid_path)
+                  unmatched.append(vid_path)
 
-          for group_key in natsorted(series_groups.keys()):
-              vids = natsorted(series_groups[group_key])
+          for k, vids in series_groups.items():
               if len(vids) > 3:
-                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-                  create_7z_group(first_stem, vids, folder, max_bytes)
+                  create_7z_group(os.path.splitext(os.path.basename(vids[0]))[0], vids, folder, max_bytes)
               else:
-                  unmatched_videos.extend(vids)
+                  unmatched.extend(vids)
 
-          unmatched_videos = natsorted(unmatched_videos)
-
-          if len(unmatched_videos) > 3:
-              first_stem = os.path.splitext(os.path.basename(unmatched_videos[0]))[0]
-              create_7z_group(f"Batch_{first_stem}", unmatched_videos, folder, max_bytes)
+          if len(unmatched) > 3:
+              create_7z_group(f"Batch_{os.path.splitext(os.path.basename(unmatched[0]))[0]}", unmatched, folder, max_bytes)
 
           for r, dirs, files in os.walk(folder, topdown=False):
               if r == folder: continue
-              for f in natsorted(files):
+              for f in files:
                   if f.lower().endswith(media_ext):
-                      src = os.path.join(r, f)
-                      dst = os.path.join(folder, f)
-                      if not os.path.exists(dst): 
-                          shutil.move(src, dst)
+                      src, dst = os.path.join(r, f), os.path.join(folder, f)
+                      if not os.path.exists(dst): shutil.move(src, dst)
               shutil.rmtree(r, ignore_errors=True)
           EOF
 
       - run: echo "📤 Running Parallel Multi-Threaded Uploads to Filemirage..."
       - run: |
           python3 - << 'EOF'
-          import os
-          import subprocess
-          import requests
-          import time
-          import fcntl
+          import os, subprocess, requests, time, fcntl
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          FILEMIRAGE_API_TOKEN = '9QQH-DGES-CWQZ-FXNV'
-          FOLDER_PATH = 'downloads'
+          TOKEN = '9QQH-DGES-CWQZ-FXNV'
+          FOLDER = 'downloads'
 
           try:
-              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
-              SERVER = srv_res['data']['server']
+              SERVER = requests.get("https://filemirage.com/api/servers", timeout=10).json()['data']['server']
           except Exception as e:
-              print(f"Failed to fetch Filemirage server: {e}")
+              print(f"Server fetch failed: {e}")
               exit(1)
 
-          def upload_single_file(file_path):
-              filename = os.path.basename(file_path)
-              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
-              
-              curl_cmd = [
-                  "curl", "-X", "POST",
-                  f"{SERVER}/upload.php",
-                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
-                  "-F", f"file=@{file_path}",
-                  "--max-time", "3600"
-              ]
-              
-              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-              
-              fd = proc.stderr.fileno()
-              fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-              
-              last_print_time = time.time()
-              buffer = b""
-              
+          def upload_file(path):
+              name = os.path.basename(path)
+              print(f"⬆️ Uploading: {name}", flush=True)
+              cmd = ["curl", "-X", "POST", f"{SERVER}/upload.php", "-H", f"Authorization: Bearer {TOKEN}", "-F", f"file=@{path}", "--max-time", "3600"]
+              proc = subprocess.Popen(cmd, stderr=subprocess.PIPE, stdout=subprocess.PIPE)
               while proc.poll() is None:
-                  try:
-                      chunk = proc.stderr.read(1024)
-                      if chunk:
-                          buffer += chunk
-                          if b'\r' in buffer or b'\n' in buffer:
-                              lines = buffer.replace(b'\r', b'\n').split(b'\n')
-                              buffer = lines[-1]
-                              valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
-                              if valid_lines:
-                                  last_line = valid_lines[-1]
-                                  if time.time() - last_print_time >= 30:
-                                      print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
-                                      last_print_time = time.time()
-                  except Exception:
-                      pass
-                  time.sleep(0.5)
-                  
-              stdout, stderr = proc.communicate()
-              if proc.returncode == 0:
-                  print(f"✅ Finished uploading {filename}: {stdout.decode('utf-8', errors='ignore').strip()}", flush=True)
-              else:
-                  err_msg = stderr.decode('utf-8', errors='ignore').strip() if stderr else 'Unknown error'
-                  print(f"❌ Curl Error uploading {filename}: {err_msg}", flush=True)
+                  time.sleep(1)
+              out, err = proc.communicate()
+              print(f"✅ Finished {name}: {out.decode('utf-8', errors='ignore').strip()}" if proc.returncode == 0 else f"❌ Error {name}: {err.decode('utf-8', errors='ignore').strip()}")
 
-          if os.path.exists(FOLDER_PATH):
-              upload_queue = []
-              for root, dirs, files in os.walk(FOLDER_PATH):
-                  for filename in files:
-                      if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
-                          upload_queue.append(os.path.join(root, filename))
-              
-              upload_queue = natsorted(upload_queue)
-              
-              if upload_queue:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files...", flush=True)
+          if os.path.exists(FOLDER):
+              queue = natsorted([os.path.join(r, f) for r, _, files in os.walk(FOLDER) for f in files if not any(x in f for x in [".!qB", ".part", ".aria2"])])
+              if queue:
                   with ThreadPoolExecutor(max_workers=4) as executor:
-                      executor.map(upload_single_file, upload_queue)
+                      executor.map(upload_file, queue)
           EOF
