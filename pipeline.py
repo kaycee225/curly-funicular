@@ -90,7 +90,7 @@ def get_best_trackers():
         print(f"⚠️ Tracker fetch failed ({e}). Using fallback tracker list.", flush=True)
     return fallback_trackers
 
-async def download_target(target, sem, live_trackers, ses, stuck_timeout=25):
+async def download_target(target, sem, live_trackers, ses):
     async with sem:
         if target.startswith('http') and not target.endswith('.torrent'):
             print(f"📥 Starting direct HTTP download: {target[:80]}", flush=True)
@@ -106,9 +106,10 @@ async def download_target(target, sem, live_trackers, ses, stuck_timeout=25):
                 print(f"✅ Successfully finished: {target[:80]}", flush=True)
                 return target
             except Exception as e:
-                print(f"⚠️ HTTP download failed: {e}")
+                print(f"❌ HTTP download failed: {e}")
                 return None
 
+        # Torrent / Magnet download (no retries, no premature termination)
         print(f"📥 Starting torrent: {target[:80]}", flush=True)
         handle = None
         try:
@@ -124,20 +125,12 @@ async def download_target(target, sem, live_trackers, ses, stuck_timeout=25):
             for tr in live_trackers:
                 handle.add_tracker({'url': tr})
                 
-            download_started = False
-            start_time = time.time()
             last_print_time = time.time()
             
             while True:
                 s = handle.status()
                 if handle.is_seed() or s.state == lt.torrent_status.seeding:
                     break
-                    
-                if not s.has_metadata:
-                    pass 
-                elif s.download_payload_rate > 0 and not download_started:
-                    download_started = True
-                    print(f"🚀 Active transfer started for: {s.name or os.path.basename(target)}", flush=True)
                     
                 current_time = time.time()
                 if current_time - last_print_time >= 30:
@@ -159,27 +152,19 @@ async def download_target(target, sem, live_trackers, ses, stuck_timeout=25):
                     print(f"📊 Progress [{name[:30]}]: {prog:.2f}% | Rate: {rate:.1f} KiB/s | ETA: {eta_str} | Peers: {s.num_peers} | State: {state_name}", flush=True)
                     last_print_time = current_time
                     
-                if not download_started and (time.time() - start_time) > stuck_timeout:
-                    print(f"⏱️ Stuck at 0% for {stuck_timeout}s. Terminating...", flush=True)
-                    break
                 await asyncio.sleep(2)
                 
-            if handle.is_seed() or handle.status().state == lt.torrent_status.seeding:
-                print(f"✅ Successfully finished: {target[:80]}", flush=True)
-                ses.remove_torrent(handle)
-                return target
+            print(f"✅ Successfully finished: {target[:80]}", flush=True)
+            ses.remove_torrent(handle)
+            return target
         except Exception as e:
-            print(f"⚠️ Error on {target[:80]}: {e}", flush=True)
-            
-        if handle:
-            try:
+            print(f"❌ Error on {target[:80]}: {e}", flush=True)
+            if handle:
                 ses.remove_torrent(handle)
-            except Exception:
-                pass
-        return None
+            return None
 
 async def run_downloads():
-    print("🚀 Starting max-speed concurrent libtorrent downloads with ETA tracking...")
+    print("🚀 Starting concurrent libtorrent downloads with ETA tracking...")
     targets = natsorted(glob.glob("torrents/*.torrent"))
     if os.path.exists("direct_links.txt"):
         with open("direct_links.txt", "r") as f:
