@@ -13,7 +13,7 @@ import libtorrent as lt
 from natsort import natsorted
 from magnet2torrent import Magnet2Torrent
 
-LINK_URL = "https://pink-script-snap.lovable.app/api/public/page/0e01cfaf-128c-477f-bff1-9dee23822d97.txt"
+LINK_URL = "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt"
 FILEMIRAGE_TOKEN = "9QQH-DGES-CWQZ-FXNV"
 
 async def process_links():
