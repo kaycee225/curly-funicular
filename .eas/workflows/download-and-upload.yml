@@ -14,7 +14,7 @@ jobs:
       - run: echo "📦 Installing dependencies (7-zip, libtorrent, Python3)..."
       - run: sudo apt update -qq
       - run: sudo apt install -y -qq p7zip-full python3-libtorrent python3 python3-requests python3-pip curl
-      - run: pip3 install --no-cache-dir --break-system-packages magnet2torrent requests natsort
+      - run: pip3 install --no-cache-dir magnet2torrent requests natsort
       
       - run: echo "🧲 Processing links (Converting magnets & Queuing direct links)..."
       - run: mkdir -p downloads torrents 
