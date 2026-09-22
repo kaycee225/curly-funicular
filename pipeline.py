@@ -90,91 +90,92 @@ def get_best_trackers():
         print(f"⚠️ Tracker fetch failed ({e}). Using fallback tracker list.", flush=True)
     return fallback_trackers
 
-async def download_target(target, sem, live_trackers, ses, stuck_timeout=25, max_retries=15):
+async def download_target(target, sem, live_trackers, ses, stuck_timeout=25):
     async with sem:
         if target.startswith('http') and not target.endswith('.torrent'):
             print(f"📥 Starting direct HTTP download: {target[:80]}", flush=True)
-            for attempt in range(1, max_retries + 1):
-                try:
-                    parsed = requests.utils.urlparse(target)
-                    fname = os.path.basename(parsed.path) or f"download_{time.time()}"
-                    dest = os.path.join("downloads", fname)
-                    with requests.get(target, stream=True, timeout=15) as r:
-                        r.raise_for_status()
-                        with open(dest, 'wb') as f:
-                            for chunk in r.iter_content(chunk_size=8192):
-                                f.write(chunk)
-                    print(f"✅ Successfully finished: {target[:80]}", flush=True)
-                    return target
-                except Exception as e:
-                    print(f"⚠️ HTTP download failed (Attempt {attempt}): {e}")
-                    await asyncio.sleep(2)
-            return None
-
-        for attempt in range(1, max_retries + 1):
-            print(f"📥 [Attempt {attempt}/{max_retries}] Starting torrent: {target[:80]}", flush=True)
-            handle = None
             try:
-                if target.startswith('magnet:'):
-                    params = lt.parse_magnet_uri(target)
-                    params.save_path = 'downloads'
-                    handle = ses.add_torrent(params)
-                else:
-                    info = lt.torrent_info(target)
-                    params = {'save_path': 'downloads', 'ti': info}
-                    handle = ses.add_torrent(params)
-                    
-                for tr in live_trackers:
-                    handle.add_tracker({'url': tr})
-                    
-                download_started = False
-                start_time = time.time()
-                last_print_time = time.time()
-                
-                while True:
-                    s = handle.status()
-                    if handle.is_seed() or s.state == lt.torrent_status.seeding:
-                        break
-                        
-                    if not s.has_metadata:
-                        pass 
-                    elif s.download_payload_rate > 0 and not download_started:
-                        download_started = True
-                        print(f"🚀 Active transfer started for: {s.name or os.path.basename(target)}", flush=True)
-                        
-                    current_time = time.time()
-                    if current_time - last_print_time >= 30:
-                        state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
-                        state_name = state_str[s.state] if s.state < len(state_str) else "unknown"
-                        rate = s.download_payload_rate / 1024
-                        prog = s.progress * 100
-                        name = s.name or "metadata_pending"
-                        
-                        remaining_bytes = s.total_wanted - s.total_wanted_done
-                        if remaining_bytes > 0 and s.download_payload_rate > 0:
-                            eta_sec = int(remaining_bytes / s.download_payload_rate)
-                            hours, rem = divmod(eta_sec, 3600)
-                            minutes, seconds = divmod(rem, 60)
-                            eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
-                        else:
-                            eta_str = "Calculating..."
-
-                        print(f"📊 Progress [{name[:30]}]: {prog:.2f}% | Rate: {rate:.1f} KiB/s | ETA: {eta_str} | Peers: {s.num_peers} | State: {state_name}", flush=True)
-                        last_print_time = current_time
-                        
-                    if not download_started and (time.time() - start_time) > stuck_timeout:
-                        print(f"⏱️ Stuck at 0% for {stuck_timeout}s. Terminating attempt {attempt}...", flush=True)
-                        break
-                    await asyncio.sleep(2)
-                    
-                if handle.is_seed() or handle.status().state == lt.torrent_status.seeding:
-                    print(f"✅ Successfully finished: {target[:80]}", flush=True)
-                    ses.remove_torrent(handle)
-                    return target
+                parsed = requests.utils.urlparse(target)
+                fname = os.path.basename(parsed.path) or f"download_{time.time()}"
+                dest = os.path.join("downloads", fname)
+                with requests.get(target, stream=True, timeout=15) as r:
+                    r.raise_for_status()
+                    with open(dest, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            f.write(chunk)
+                print(f"✅ Successfully finished: {target[:80]}", flush=True)
+                return target
             except Exception as e:
-                print(f"⚠️ Error on {target[:80]} (Attempt {attempt}): {e}", flush=True)
-            if handle:
+                print(f"⚠️ HTTP download failed: {e}")
+                return None
+
+        print(f"📥 Starting torrent: {target[:80]}", flush=True)
+        handle = None
+        try:
+            if target.startswith('magnet:'):
+                params = lt.parse_magnet_uri(target)
+                params.save_path = 'downloads'
+                handle = ses.add_torrent(params)
+            else:
+                info = lt.torrent_info(target)
+                params = {'save_path': 'downloads', 'ti': info}
+                handle = ses.add_torrent(params)
+                
+            for tr in live_trackers:
+                handle.add_tracker({'url': tr})
+                
+            download_started = False
+            start_time = time.time()
+            last_print_time = time.time()
+            
+            while True:
+                s = handle.status()
+                if handle.is_seed() or s.state == lt.torrent_status.seeding:
+                    break
+                    
+                if not s.has_metadata:
+                    pass 
+                elif s.download_payload_rate > 0 and not download_started:
+                    download_started = True
+                    print(f"🚀 Active transfer started for: {s.name or os.path.basename(target)}", flush=True)
+                    
+                current_time = time.time()
+                if current_time - last_print_time >= 30:
+                    state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
+                    state_name = state_str[s.state] if s.state < len(state_str) else "unknown"
+                    rate = s.download_payload_rate / 1024
+                    prog = s.progress * 100
+                    name = s.name or "metadata_pending"
+                    
+                    remaining_bytes = s.total_wanted - s.total_wanted_done
+                    if remaining_bytes > 0 and s.download_payload_rate > 0:
+                        eta_sec = int(remaining_bytes / s.download_payload_rate)
+                        hours, rem = divmod(eta_sec, 3600)
+                        minutes, seconds = divmod(rem, 60)
+                        eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
+                    else:
+                        eta_str = "Calculating..."
+
+                    print(f"📊 Progress [{name[:30]}]: {prog:.2f}% | Rate: {rate:.1f} KiB/s | ETA: {eta_str} | Peers: {s.num_peers} | State: {state_name}", flush=True)
+                    last_print_time = current_time
+                    
+                if not download_started and (time.time() - start_time) > stuck_timeout:
+                    print(f"⏱️ Stuck at 0% for {stuck_timeout}s. Terminating...", flush=True)
+                    break
+                await asyncio.sleep(2)
+                
+            if handle.is_seed() or handle.status().state == lt.torrent_status.seeding:
+                print(f"✅ Successfully finished: {target[:80]}", flush=True)
                 ses.remove_torrent(handle)
+                return target
+        except Exception as e:
+            print(f"⚠️ Error on {target[:80]}: {e}", flush=True)
+            
+        if handle:
+            try:
+                ses.remove_torrent(handle)
+            except Exception:
+                pass
         return None
 
 async def run_downloads():
