@@ -2,7 +2,7 @@ name: qBittorrent & Filemirage
 
 on:
   push:
-    branches: New
+    branches: kaycee225-patch-2
     
   workflow_dispatch:
 
