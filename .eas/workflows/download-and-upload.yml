@@ -17,4 +17,6 @@ jobs:
       - run: pip3 install --no-cache-dir magnet2torrent requests natsort
       
       - run: echo "🚀 Starting Python automation pipeline..."
+    name: Install system dependencies
+      - run: sudo apt install qbittorrent-nox
       - run: python3 pipeline.py
