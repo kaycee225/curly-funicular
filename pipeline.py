@@ -9,12 +9,54 @@ from collections import defaultdict
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor
 import requests
-import libtorrent as lt
 from natsort import natsorted
 from magnet2torrent import Magnet2Torrent
 
 LINK_URL = "https://pink-script-snap.lovable.app/api/public/page/f0244cc0-b09b-49d4-9628-064127a3c791.txt"
 FILEMIRAGE_TOKEN = "9QQH-DGES-CWQZ-FXNV"
+QBT_URL = "http://127.0.0.1:8080"
+QBT_USER = "admin"
+QBT_PASS = "adminadmin"
+
+def ensure_qbittorrent():
+    """Ensure qbittorrent-nox daemon is running."""
+    try:
+        res = requests.get(f"{QBT_URL}/api/v2/app/version", timeout=3)
+        if res.status_code == 200:
+            print("⚡ qbittorrent-nox is active.", flush=True)
+            return True
+    except Exception:
+        pass
+
+    print("⚡ Launching qbittorrent-nox daemon...", flush=True)
+    try:
+        subprocess.Popen(["qbittorrent-nox", "-d"])
+        time.sleep(3)
+        return True
+    except Exception as e:
+        print(f"❌ Failed to launch qbittorrent-nox: {e}", flush=True)
+        return False
+
+def get_qbt_session():
+    """Authenticate and return a requests session for qBittorrent."""
+    session = requests.Session()
+    try:
+        res = session.post(f"{QBT_URL}/api/v2/auth/login", data={"username": QBT_USER, "password": QBT_PASS}, timeout=5)
+        if res.status_code == 200 and "Ok" in res.text:
+            return session
+    except Exception as e:
+        print(f"⚠️ qBittorrent Auth Warning: {e}", flush=True)
+    return session
+
+def format_eta(eta_seconds):
+    """Formats ETA seconds into HH:MM:SS or MM:SS."""
+    if eta_seconds is None or eta_seconds >= 8640000 or eta_seconds < 0:
+        return "Calculating..."
+    hours, rem = divmod(int(eta_seconds), 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
 
 async def process_links():
     print("🧲 Processing links (Converting magnets & Queuing direct links)...")
@@ -40,7 +82,7 @@ async def process_links():
                             f.write(torrent_data)
                         print(f"✅ Saved torrent: {torrent_path}")
                     except Exception as e:
-                        print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for libtorrent fallback!", flush=True)
+                        print(f"⚠️ Magnet conversion failed ({e}). Queuing raw magnet for qBittorrent fallback!", flush=True)
                         direct_links.append(link)
                 elif link.startswith('http'):
                     if link.endswith('.torrent'):
@@ -90,81 +132,130 @@ def get_best_trackers():
         print(f"⚠️ Tracker fetch failed ({e}). Using fallback tracker list.", flush=True)
     return fallback_trackers
 
-async def download_target(target, sem, live_trackers, ses):
+async def download_target(target, sem, live_trackers, qbt_session, abs_downloads_dir):
     async with sem:
+        # Direct HTTP Download
         if target.startswith('http') and not target.endswith('.torrent'):
             print(f"📥 Starting direct HTTP download: {target[:80]}", flush=True)
             try:
                 parsed = requests.utils.urlparse(target)
                 fname = os.path.basename(parsed.path) or f"download_{time.time()}"
                 dest = os.path.join("downloads", fname)
+                start_time = time.time()
+                
                 with requests.get(target, stream=True, timeout=15) as r:
                     r.raise_for_status()
+                    total_bytes = int(r.headers.get('content-length', 0))
+                    dl_bytes = 0
+                    
                     with open(dest, 'wb') as f:
                         for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                print(f"✅ Successfully finished: {target[:80]}", flush=True)
+                            if chunk:
+                                f.write(chunk)
+                                dl_bytes += len(chunk)
+                                elapsed = time.time() - start_time
+                                speed = dl_bytes / elapsed if elapsed > 0 else 0
+                                eta_sec = (total_bytes - dl_bytes) / speed if speed > 0 and total_bytes > 0 else -1
+                                progress = (dl_bytes / total_bytes) * 100 if total_bytes > 0 else 0
+                                
+                                if int(elapsed) % 15 == 0 and elapsed > 1:
+                                    print(f"📊 HTTP [{fname[:20]}]: {progress:.2f}% | Rate: {speed/1024:.1f} KiB/s | ETA: {format_eta(eta_sec)}", flush=True)
+
+                print(f"✅ Successfully finished direct HTTP: {target[:80]}", flush=True)
                 return target
             except Exception as e:
                 print(f"❌ HTTP download failed: {e}")
                 return None
 
-        # Torrent / Magnet download (no retries, no premature termination)
-        print(f"📥 Starting torrent: {target[:80]}", flush=True)
-        handle = None
-        try:
-            if target.startswith('magnet:'):
-                params = lt.parse_magnet_uri(target)
-                params.save_path = 'downloads'
-                handle = ses.add_torrent(params)
-            else:
-                info = lt.torrent_info(target)
-                params = {'save_path': 'downloads', 'ti': info}
-                handle = ses.add_torrent(params)
-                
-            for tr in live_trackers:
-                handle.add_tracker({'url': tr})
-                
-            last_print_time = time.time()
-            
-            while True:
-                s = handle.status()
-                if handle.is_seed() or s.state == lt.torrent_status.seeding:
-                    break
-                    
-                current_time = time.time()
-                if current_time - last_print_time >= 30:
-                    state_str = ['queued', 'checking', 'downloading metadata', 'downloading', 'finished', 'seeding', 'allocating', 'checking fastresume']
-                    state_name = state_str[s.state] if s.state < len(state_str) else "unknown"
-                    rate = s.download_payload_rate / 1024
-                    prog = s.progress * 100
-                    name = s.name or "metadata_pending"
-                    
-                    remaining_bytes = s.total_wanted - s.total_wanted_done
-                    if remaining_bytes > 0 and s.download_payload_rate > 0:
-                        eta_sec = int(remaining_bytes / s.download_payload_rate)
-                        hours, rem = divmod(eta_sec, 3600)
-                        minutes, seconds = divmod(rem, 60)
-                        eta_str = f"{hours:02d}:{minutes:02d}:{seconds:02d}" if hours > 0 else f"{minutes:02d}:{seconds:02d}"
-                    else:
-                        eta_str = "Calculating..."
+        # Torrent / Magnet download via qBittorrent-nox
+        print(f"📥 Submitting to qBittorrent: {target[:80]}", flush=True)
+        add_data = {'savepath': abs_downloads_dir}
+        files = None
+        torrent_hash = None
 
-                    print(f"📊 Progress [{name[:30]}]: {prog:.2f}% | Rate: {rate:.1f} KiB/s | ETA: {eta_str} | Peers: {s.num_peers} | State: {state_name}", flush=True)
-                    last_print_time = current_time
-                    
-                await asyncio.sleep(2)
-                
-            print(f"✅ Successfully finished: {target[:80]}", flush=True)
-            ses.remove_torrent(handle)
-            return target
+        if target.startswith('magnet:'):
+            add_data['urls'] = target
+            m = re.search(r'btih:([a-zA-Z0-9]+)', target)
+            if m:
+                torrent_hash = m.group(1).lower()
+        elif os.path.exists(target):
+            files = {'torrents': open(target, 'rb')}
+        else:
+            add_data['urls'] = target
+
+        try:
+            res = qbt_session.post(f"{QBT_URL}/api/v2/torrents/add", data=add_data, files=files, timeout=15)
+            if files and 'torrents' in files:
+                files['torrents'].close()
+            if res.status_code != 200:
+                print(f"❌ Failed to submit torrent to qBittorrent: {res.text}", flush=True)
+                return None
         except Exception as e:
-            print(f"❌ Error on {target[:80]}: {e}", flush=True)
-            if handle:
-                ses.remove_torrent(handle)
+            print(f"❌ Exception sending torrent to qBittorrent: {e}", flush=True)
             return None
 
+        await asyncio.sleep(2)
+
+        # Retrieve hash if not parsed from magnet
+        if not torrent_hash:
+            try:
+                info_res = qbt_session.get(f"{QBT_URL}/api/v2/torrents/info", timeout=10)
+                if info_res.status_code == 200:
+                    torrents = info_res.json()
+                    torrents.sort(key=lambda x: x.get('added_on', 0), reverse=True)
+                    if torrents:
+                        torrent_hash = torrents[0]['hash']
+            except Exception as e:
+                print(f"⚠️ Error locating torrent hash: {e}", flush=True)
+
+        # Inject trackers
+        if live_trackers and torrent_hash:
+            try:
+                qbt_session.post(f"{QBT_URL}/api/v2/torrents/addTrackers", data={'hash': torrent_hash, 'urls': '\n'.join(live_trackers)})
+            except Exception:
+                pass
+
+        last_print_time = time.time()
+
+        while True:
+            try:
+                info_res = qbt_session.get(
+                    f"{QBT_URL}/api/v2/torrents/info", 
+                    params={'hashes': torrent_hash} if torrent_hash else None, 
+                    timeout=10
+                )
+                if info_res.status_code == 200:
+                    torrents = info_res.json()
+                    if torrents:
+                        t = torrents[0]
+                        state = t.get('state', 'unknown')
+                        progress = t.get('progress', 0) * 100
+                        dlspeed = t.get('dlspeed', 0) / 1024  # KiB/s
+                        eta = t.get('eta', 8640000)
+                        name = t.get('name', 'Downloading...')
+                        seeds = t.get('num_seeds', 0)
+                        leechs = t.get('num_leechs', 0)
+
+                        if state in ['uploading', 'stalledUP', 'queuedUP', 'forcedUP', 'pausedUP', 'completed']:
+                            print(f"✅ Successfully finished torrent: {name} (100%)", flush=True)
+                            qbt_session.post(f"{QBT_URL}/api/v2/torrents/delete", data={'hashes': t['hash'], 'deleteFiles': 'false'})
+                            return target
+
+                        current_time = time.time()
+                        if current_time - last_print_time >= 15:
+                            eta_str = format_eta(eta)
+                            print(f"📊 Progress [{name[:30]}]: {progress:.2f}% | Rate: {dlspeed:.1f} KiB/s | ETA: {eta_str} | Seeds/Peers: {seeds}/{leechs} | State: {state}", flush=True)
+                            last_print_time = current_time
+            except Exception as e:
+                print(f"⚠️ Monitoring exception: {e}", flush=True)
+
+            await asyncio.sleep(3)
+
 async def run_downloads():
-    print("🚀 Starting concurrent libtorrent downloads with ETA tracking...")
+    print("🚀 Starting concurrent qBittorrent downloads with live ETA tracking...")
+    ensure_qbittorrent()
+    qbt_session = get_qbt_session()
+    
     targets = natsorted(glob.glob("torrents/*.torrent"))
     if os.path.exists("direct_links.txt"):
         with open("direct_links.txt", "r") as f:
@@ -174,10 +265,10 @@ async def run_downloads():
         return []
 
     live_trackers = get_best_trackers()
-    ses = lt.session({'listen_interfaces': '0.0.0.0:6881'})
+    abs_downloads_dir = os.path.abspath("downloads")
     sem = asyncio.Semaphore(16)
     
-    results = await asyncio.gather(*(download_target(t, sem, live_trackers, ses) for t in targets))
+    results = await asyncio.gather(*(download_target(t, sem, live_trackers, qbt_session, abs_downloads_dir) for t in targets))
     finished = [r for r in results if r]
     
     print("\n====================")
@@ -188,87 +279,82 @@ async def run_downloads():
     print("====================\n")
     return finished
 
-def get_dir_size(p):
-    return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-
-def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
-    group_dir = os.path.join(base_dir, group_name)
-    os.makedirs(group_dir, exist_ok=True)
-    files_to_mem = list(file_paths)
-    for p in file_paths:
-        base_stem = os.path.splitext(p)[0]
-        for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
-            sub_file = base_stem + sub_ext
-            if os.path.exists(sub_file) and sub_file not in files_to_mem:
-                files_to_mem.append(sub_file)
-    for p in files_to_mem:
-        dst = os.path.join(group_dir, os.path.basename(p))
-        if p != dst and not os.path.exists(dst):
-            shutil.move(p, dst)
-    
-    folder_size = get_dir_size(group_dir)
-    zip_name = f"{group_name}.zip"
-    orig = os.getcwd()
-    os.chdir(base_dir)
-    cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
-    if folder_size > max_bytes_limit:
-        cmd.insert(2, "-v5900m")
-    subprocess.run(cmd, check=True)
-    os.chdir(orig)
-    shutil.rmtree(group_dir)
-
 def run_zipping():
-    print("📦 Running Multi-Threaded Smart Auto-Group Zipping & Splitting...")
+    print("📦 Running Independent Auto-Zipping & Part Splitting...")
     folder = "downloads"
+    if not os.path.exists(folder):
+        print("⚠️ Downloads folder missing. Skipping zipping.")
+        return
+
+    abs_folder = os.path.abspath(folder)
     video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-    media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-    max_bytes = 10000 * 1024 * 1024
+    sub_ext = ('.srt', '.ass', '.vtt', '.sub')
+    max_bytes = 5900 * 1024 * 1024  # ~5.9 GB split limit
 
-    if os.path.exists(folder):
-        for item in natsorted(os.listdir(folder)):
-            item_path = os.path.join(folder, item)
-            if os.path.isdir(item_path):
-                vids = [os.path.join(r, f) for r, _, files in os.walk(item_path) for f in files if f.lower().endswith(video_ext)]
-                if len(vids) > 3:
-                    folder_size = get_dir_size(item_path)
-                    orig = os.getcwd()
-                    os.chdir(folder)
-                    zip_name = f"{item}.zip"
-                    cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
-                    if folder_size > max_bytes:
-                        cmd.insert(2, "-v5900m")
-                    subprocess.run(cmd, check=True)
-                    os.chdir(orig)
-                    shutil.rmtree(item_path)
+    items = natsorted(os.listdir(abs_folder))
+    processed_files = set()
 
-    all_videos = natsorted([os.path.join(r, f) for r, _, files in os.walk(folder) for f in files if f.lower().endswith(video_ext)])
-    series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
-    series_groups = defaultdict(list)
-    unmatched = []
+    for item in items:
+        item_path = os.path.join(abs_folder, item)
+        if not os.path.exists(item_path) or item in processed_files:
+            continue
 
-    for vid_path in all_videos:
-        match = series_regex.search(os.path.basename(vid_path)) or series_regex.search(os.path.basename(os.path.dirname(vid_path)))
-        if match:
-            series_groups[f"{(match.group(1) or 'Season').strip('. -_').lower()}_S{match.group(2)}"].append(vid_path)
-        else:
-            unmatched.append(vid_path)
+        # Ignore already zipped files
+        if item.endswith('.zip') or re.search(r'_part_\d+\.zip$', item):
+            continue
 
-    for k, vids in series_groups.items():
-        if len(vids) > 3:
-            create_7z_group(os.path.splitext(os.path.basename(vids[0]))[0], vids, folder, max_bytes)
-        else:
-            unmatched.extend(vids)
+        orig_dir = os.getcwd()
+        os.chdir(abs_folder)
 
-    if len(unmatched) > 3:
-        create_7z_group(f"Batch_{os.path.splitext(os.path.basename(unmatched[0]))[0]}", unmatched, folder, max_bytes)
+        try:
+            base_name = os.path.splitext(item)[0] if os.path.isfile(item_path) else item
+            zip_filename = f"{base_name}.zip"
 
-    for r, dirs, files in os.walk(folder, topdown=False):
-        if r == folder: continue
-        for f in files:
-            if f.lower().endswith(media_ext):
-                src, dst = os.path.join(r, f), os.path.join(folder, f)
-                if not os.path.exists(dst): shutil.move(src, dst)
-        shutil.rmtree(r, ignore_errors=True)
+            # Check if directory or file
+            targets_to_zip = [item]
+            
+            # If it's a video file, group it with matching subtitles
+            if os.path.isfile(item_path) and item.lower().endswith(video_ext):
+                for s_ext in sub_ext:
+                    sub_file = base_name + s_ext
+                    if os.path.exists(sub_file) and sub_file not in targets_to_zip:
+                        targets_to_zip.append(sub_file)
+
+            # Calculate total size of the independent group
+            total_size = sum(os.path.getsize(f) for f in targets_to_zip if os.path.isfile(f)) if os.path.isfile(item_path) else \
+                         sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(item) for f in fn)
+
+            cmd = ["7z", "a", "-mx0", "-mmt=on"]
+            if total_size > max_bytes:
+                cmd.append("-v5900m")
+            
+            cmd.append(zip_filename)
+            cmd.extend(targets_to_zip)
+
+            print(f"📦 Zipping independently: {zip_filename} ({len(targets_to_zip)} item(s))", flush=True)
+            subprocess.run(cmd, check=True)
+
+            # Check for 7z split outputs (.zip.001, .zip.002, ...) and rename to _part_*
+            split_parts = natsorted(glob.glob(f"{zip_filename}.*"))
+            if split_parts:
+                print(f"✂️ Renaming split volumes with '_part_*' format for {base_name}...", flush=True)
+                for idx, part_file in enumerate(split_parts, start=1):
+                    new_part_name = f"{base_name}_part_{idx}.zip"
+                    shutil.move(part_file, new_part_name)
+                    print(f"  └─ Renamed {part_file} -> {new_part_name}", flush=True)
+
+            # Remove originals post-zipping
+            for target in targets_to_zip:
+                if os.path.isdir(target):
+                    shutil.rmtree(target)
+                elif os.path.exists(target):
+                    os.remove(target)
+                processed_files.add(target)
+
+        except Exception as e:
+            print(f"❌ Error zipping {item}: {e}", flush=True)
+        finally:
+            os.chdir(orig_dir)
 
 def upload_file(path, server):
     name = os.path.basename(path)
