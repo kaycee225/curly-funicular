@@ -15,8 +15,5 @@ jobs:
       - run: echo "📦 Installing system dependencies (7-zip, libtorrent, Python3)..."
       - run: sudo apt update -qq && sudo apt install -y -qq p7zip-full python3-libtorrent python3 python3-requests python3-pip curl
       - run: pip3 install --no-cache-dir magnet2torrent requests natsort
-      
-      - run: echo "🚀 Starting Python automation pipeline..."
-    name: Install system dependencies
       - run: sudo apt install qbittorrent-nox
       - run: python3 pipeline.py
