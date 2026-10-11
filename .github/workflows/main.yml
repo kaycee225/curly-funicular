@@ -604,85 +604,125 @@ jobs:
                           print(f"✅ Finished splitting '{entry}' into {part_num} parts.", flush=True)
           EOF
 
-      - name: Parallel Upload to Buzzheavier
-        env:
-          BUZZHEAVIER_ACCOUNT_ID: ${{ secrets.BUZZHEAVIER_ACCOUNT_ID }}
-          BUZZHEAVIER_TOKEN: ${{ secrets.BUZZHEAVIER_TOKEN }}
-          BUZZHEAVIER_FOLDER_ID: ${{ secrets.BUZZHEAVIER_FOLDER_ID }}
+      - name: Upload Files to Vikingfile
         run: |
-          echo "📤 Running Uploads to Buzzheavier..."
+          echo "📤 Running Parallel Multi-Threaded Uploads to Vikingfile..."
           python3 - << 'EOF'
           import os
-          import requests
           import subprocess
-          from urllib.parse import quote
+          import requests
+          import time
+          import fcntl
+          import threading
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          BUZZHEAVIER_ACCOUNT_ID = os.getenv("BUZZHEAVIER_ACCOUNT_ID") or os.getenv("BUZZHEAVIER_TOKEN") or "FINS3KA5OL68CPW5MEYD"
-          BUZZHEAVIER_FOLDER_ID = os.getenv("BUZZHEAVIER_FOLDER_ID") or "roj8pv25ry0k"
-          ignored_exts = ('.nfo', '.txt', '.exe', '.url')
+          VIKINGFILE_API_TOKEN = '8IcySE8jai'
+          FOLDER_PATH = 'downloads'
+          LINK_URL = "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/354dcb17-48af-495d-b98f-c9c1bd268c33"
 
-          def get_buzzheavier_root_id():
-              if BUZZHEAVIER_FOLDER_ID and BUZZHEAVIER_FOLDER_ID != "YOUR_DIRECTORY_ID_HERE":
-                  return BUZZHEAVIER_FOLDER_ID
-              if not BUZZHEAVIER_ACCOUNT_ID:
-                  return ""
-              try:
-                  url = "https://buzzheavier.com/api/fs"
-                  headers = {"Authorization": f"Bearer {BUZZHEAVIER_ACCOUNT_ID}"}
-                  res = requests.get(url, headers=headers, timeout=10).json()
-                  if "id" in res:
-                      return res["id"]
-                  elif isinstance(res.get("data"), dict) and "id" in res["data"]:
-                      return res["data"]["id"]
-              except Exception as e:
-                  print(f"⚠️ Failed fetching Buzzheavier root directory: {e}", flush=True)
-              return ""
+          def check_kill_switch():
+              while True:
+                  time.sleep(20)
+                  try:
+                      res = requests.get(LINK_URL, timeout=5)
+                      if res.status_code == 200 and "STOP.ALL.TORRENTS" in res.text:
+                          print("🛑 Global kill switch active. Exiting...", flush=True)
+                          os._exit(0)
+                  except Exception:
+                      pass
 
-          def upload_single_file(file_path, folder_id):
+          threading.Thread(target=check_kill_switch, daemon=True).start()
+
+          def get_upload_server():
+              # Ask the API for a fresh storage node every time
+              r = requests.get("https://vikingfile.com/api/get-server", timeout=15).json()
+              server = r.get("server")
+              if not server:
+                  raise RuntimeError(f"No server in response: {r}")
+              return server
+
+          def curl_quote(s):
+              # Escape for curl's quoted -F value syntax
+              return s.replace("\\", "\\\\").replace('"', '\\"')
+
+          def upload_single_file(file_path):
               filename = os.path.basename(file_path)
-              size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"\n⬆️ Uploading to Buzzheavier: {filename} ({size_mb:.2f} MB)", flush=True)
+              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+              print(f"⬆️ [START] Uploading to Vikingfile: {filename} ({file_size_mb:.2f} MB)", flush=True)
 
-              encoded_filename = quote(filename)
-              if folder_id:
-                  upload_url = f"https://w.buzzheavier.com/{folder_id}/{encoded_filename}"
-              else:
-                  upload_url = f"https://w.buzzheavier.com/{encoded_filename}"
+              for attempt in range(1, 4):
+                  try:
+                      target_url = get_upload_server()
+                  except Exception as e:
+                      print(f"⚠️ get-server failed for {filename} (attempt {attempt}): {e}", flush=True)
+                      time.sleep(5)
+                      continue
 
-              curl_cmd = ["curl", "-g", "-#o", "-", "-T", file_path]
-              if BUZZHEAVIER_ACCOUNT_ID:
-                  curl_cmd.extend(["-H", f"Authorization: Bearer {BUZZHEAVIER_ACCOUNT_ID}"])
-              curl_cmd.append(upload_url)
+                  curl_cmd = [
+                      "curl", "-f", "-X", "POST",
+                      target_url,
+                      "--form-string", f"user={VIKINGFILE_API_TOKEN}",
+                      "-F", f'file=@"{curl_quote(file_path)}";filename="{curl_quote(filename)}"',
+                      "--max-time", "3600"
+                  ]
 
-              res = subprocess.run(curl_cmd)
-              if res.returncode == 0:
-                  print(f"\n✅ Finished uploading: {filename}", flush=True)
-              else:
-                  print(f"\n❌ Upload failed for {filename} (curl exit code: {res.returncode})", flush=True)
+                  proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-          def run_uploads():
-              root_folder_id = get_buzzheavier_root_id()
+                  fd = proc.stderr.fileno()
+                  fl = fcntl.fcntl(fd, fcntl.F_GETFL)
+                  fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
 
-              base_dir = 'downloads'
-              if not os.path.exists(base_dir):
-                  return
+                  last_print_time = time.time()
+                  buffer = b""
 
+                  while proc.poll() is None:
+                      try:
+                          chunk = proc.stderr.read(1024)
+                          if chunk:
+                              buffer += chunk
+                              if b'\r' in buffer or b'\n' in buffer:
+                                  lines = buffer.replace(b'\r', b'\n').split(b'\n')
+                                  buffer = lines[-1]
+                                  valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
+                                  if valid_lines and time.time() - last_print_time >= 30:
+                                      print(f"📤 Progress [{filename[:25]}]: {valid_lines[-1]}", flush=True)
+                                      last_print_time = time.time()
+                      except Exception:
+                          pass
+                      time.sleep(0.5)
+
+                  stdout, stderr = proc.communicate()
+                  out_msg = stdout.decode('utf-8', errors='ignore').strip()
+                  err_msg = stderr.decode('utf-8', errors='ignore').strip().splitlines()
+                  err_tail = err_msg[-1] if err_msg else 'Unknown error'
+
+                  if proc.returncode == 0 and out_msg and not out_msg.lower().startswith("<html"):
+                      print(f"✅ Finished uploading {filename}: {out_msg}", flush=True)
+                      return
+
+                  print(f"⚠️ Attempt {attempt}/3 failed for {filename} via {target_url}: {out_msg or err_tail}", flush=True)
+                  time.sleep(3)
+
+              print(f"❌ Failed to upload {filename} after 3 attempts.", flush=True)
+
+          def safe_upload(file_path):
+              try:
+                  upload_single_file(file_path)
+              except Exception as e:
+                  print(f"❌ Exception uploading {file_path}: {e}", flush=True)
+
+          if os.path.exists(FOLDER_PATH):
               upload_queue = []
-              for root, _, files in os.walk(base_dir):
-                  for f in files:
-                      if any(f.lower().endswith(ext) for ext in [".!qb", ".part", ".aria2"]):
-                          continue
-                      if f.lower().endswith(ignored_exts):
-                          continue
-                      upload_queue.append(os.path.join(root, f))
+              for root, dirs, files in os.walk(FOLDER_PATH):
+                  for filename in files:
+                      if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
+                          upload_queue.append(os.path.join(root, filename))
 
               upload_queue = natsorted(upload_queue)
-              if upload_queue:
-                  with ThreadPoolExecutor(max_workers=2) as executor:
-                      executor.map(lambda f: upload_single_file(f, root_folder_id), upload_queue)
 
-          if __name__ == "__main__":
-              run_uploads()
+              if upload_queue:
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files to Vikingfile...", flush=True)
+                  with ThreadPoolExecutor(max_workers=4) as executor:
+                      list(executor.map(safe_upload, upload_queue))
           EOF
