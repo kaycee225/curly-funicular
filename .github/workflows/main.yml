@@ -1,8 +1,8 @@
-name: qBittorrent & Filemirage
+name: qBittorrent & Vikingfile
 
 on:
   push:
-    branches: kaycee225-patch-2
+    branches: kaycee225-patch-3
     
   workflow_dispatch:
 
@@ -10,14 +10,13 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      FILEMIRAGE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      VIKINGFILE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
-      KILL_SWITCH_URL: 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
+      LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+      KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Dependencies
         run: |
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
@@ -48,8 +47,8 @@ jobs:
           import requests, time, os
           from datetime import datetime
 
-          link_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
-          kill_url = 'https://fhpsbwpqtteuchtgyqlj.supabase.co/functions/v1/page-download/820a8437-85ed-4543-b789-de53a44f31a6'
+          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
           folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
@@ -68,7 +67,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Vikingfile] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -91,7 +90,7 @@ jobs:
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
-                  print(f"🔄 Progress Update #{update_count} | {timestamp}")
+                  print(f"🔄 [GH-qBittorrent-Vikingfile] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
                   if not res:
                       print("📥 Waiting for active torrents...")
@@ -107,13 +106,13 @@ jobs:
                   print("="*50 + "\n")
                   if all_done and res: break
               except Exception: pass
-              time.sleep(10)
+              time.sleep(20)
           EOF
 
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping & Independent 10GB Splitting
+      - name: Smart Zipping & Splitting
         run: |
           python3 -u - << 'EOF'
           import os, shutil, subprocess, re
@@ -123,97 +122,60 @@ jobs:
           folder = os.environ.get("FOLDER_PATH", "downloaded_files")
           video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
           media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-          max_bytes = 10000 * 1024 * 1024  # 10 GB limit per independent ZIP file
+          max_bytes = 10000 * 1024 * 1024
 
-          def create_independent_zips(group_name, file_paths, base_dir, max_bytes_limit):
-              units = []
-              seen_files = set()
-              file_paths = natsorted(file_paths)
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
+
+          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
+              group_dir = os.path.join(base_dir, group_name)
+              os.makedirs(group_dir, exist_ok=True)
               
-              # Pair media files with matching subtitle sidecars
+              files_to_move = list(file_paths)
               for p in file_paths:
-                  if p in seen_files or not os.path.exists(p):
-                      continue
-                  unit = [p]
-                  seen_files.add(p)
-                  
                   base_stem = os.path.splitext(p)[0]
                   for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
                       sub_file = base_stem + sub_ext
-                      if os.path.exists(sub_file) and sub_file not in seen_files:
-                          unit.append(sub_file)
-                          seen_files.add(sub_file)
-                  units.append(unit)
+                      if os.path.exists(sub_file) and sub_file not in files_to_move:
+                          files_to_move.append(sub_file)
 
-              if not units:
-                  return
-
-              # Split into batch groups where size <= max_bytes_limit
-              batches = []
-              current_batch = []
-              current_size = 0
-
-              for unit in units:
-                  unit_size = sum(os.path.getsize(f) for f in unit if os.path.exists(f))
-                  if current_batch and (current_size + unit_size > max_bytes_limit):
-                      batches.append(current_batch)
-                      current_batch = []
-                      current_size = 0
-                      
-                  current_batch.extend(unit)
-                  current_size += unit_size
-
-              if current_batch:
-                  batches.append(current_batch)
-
-              # Build independent standalone .zip archives
-              num_batches = len(batches)
-              orig_dir = os.getcwd()
+              for p in files_to_move:
+                  dst = os.path.join(group_dir, os.path.basename(p))
+                  if p != dst and not os.path.exists(dst):
+                      shutil.move(p, dst)
               
-              safe_group_name = re.sub(r'[\\/*?:"<>|,;]', '_', group_name).strip() or "Batch"
+              folder_size = get_dir_size(group_dir)
+              zip_name = f"{group_name}.zip"
+              orig = os.getcwd()
+              os.chdir(base_dir)
+              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
+              if folder_size > max_bytes_limit:
+                  cmd.insert(2, "-v5900m")
+              subprocess.run(cmd, check=True)
+              os.chdir(orig)
+              shutil.rmtree(group_dir)
 
-              for idx, batch_files in enumerate(batches):
-                  if num_batches == 1:
-                      zip_filename = f"{safe_group_name}.zip"
-                  else:
-                      zip_filename = f"{safe_group_name}_part{idx + 1:02d}.zip"
-
-                  staging_parent = os.path.abspath(os.path.join(base_dir, f"_staging_{safe_group_name}"))
-                  staging_dir = os.path.join(staging_parent, safe_group_name)
-                  os.makedirs(staging_dir, exist_ok=True)
-
-                  for src in batch_files:
-                      if os.path.exists(src):
-                          dst = os.path.join(staging_dir, os.path.basename(src))
-                          if os.path.abspath(src) != os.path.abspath(dst):
-                              shutil.move(src, dst)
-
-                  abs_base_dir = os.path.abspath(base_dir)
-                  zip_output_path = os.path.join(abs_base_dir, zip_filename)
-
-                  os.chdir(staging_parent)
-                  cmd = ["7z", "a", "-mx0", "-mmt=on", zip_output_path, safe_group_name]
-                  
-                  try:
-                      subprocess.run(cmd, check=True)
-                      print(f"📦 Created independent zip: {zip_filename}", flush=True)
-                  finally:
-                      os.chdir(orig_dir)
-                      shutil.rmtree(staging_parent, ignore_errors=True)
-
-          # 1. Zip pre-existing subfolders containing > 3 videos
           if os.path.exists(folder):
               for item in natsorted(os.listdir(folder)):
                   item_path = os.path.join(folder, item)
-                  if os.path.isdir(item_path) and not item.startswith('_staging_'):
-                      all_files = [os.path.join(r, f) for r, _, files in os.walk(item_path) for f in files]
-                      vids = [f for f in all_files if f.lower().endswith(video_ext)]
+                  if os.path.isdir(item_path):
+                      vids = natsorted([
+                          os.path.join(r, f) for r, _, files in os.walk(item_path)
+                          for f in files if f.lower().endswith(video_ext)
+                      ])
                       if len(vids) > 3:
-                          print(f"📦 Zipping folder directly (> 3 videos): {item}")
-                          create_independent_zips(item, all_files, folder, max_bytes)
-                          shutil.rmtree(item_path, ignore_errors=True)
+                          print(f"📦 Zipping folder: {item}")
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(folder)
+                          zip_name = f"{item}.zip"
+                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
+                          if folder_size > max_bytes:
+                              cmd.insert(2, "-v5900m")
+                          subprocess.run(cmd, check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
 
-          # 2. Gather all remaining video files
           all_videos = []
           for r, _, files in os.walk(folder):
               for f in files:
@@ -222,30 +184,32 @@ jobs:
 
           all_videos = natsorted(all_videos)
 
-          # 3. Detect TV Series (S01, S02, 1x01, etc.)
-          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?(?:S(\d{1,2})|\b(\d{1,2})x(\d{1,2})\b)')
+          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+          
           series_groups = defaultdict(list)
+          unmatched_videos = []
 
           for vid_path in all_videos:
               vid_name = os.path.basename(vid_path)
               parent_name = os.path.basename(os.path.dirname(vid_path))
               match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              
               if match:
-                  raw_title = match.group(1) or "Series"
-                  s_num = match.group(2) or match.group(3) or "01"
-                  group_key = f"{raw_title.strip('. -_').lower()}_S{s_num}"
+                  raw_title = match.group(1) or "Season"
+                  s_num = match.group(2)
+                  clean_title = re.sub(r"['’]", "", raw_title)
+                  clean_title = re.sub(r"[\W_]+", " ", clean_title).strip().lower()
+                  group_key = f"{clean_title}_S{s_num}"
                   series_groups[group_key].append(vid_path)
+              else:
+                  unmatched_videos.append(vid_path)
 
-          # 4. Zip ONLY TV series season groups containing > 3 videos
           for group_key in natsorted(series_groups.keys()):
               vids = natsorted(series_groups[group_key])
               if len(vids) > 3:
                   first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-                  create_independent_zips(first_stem, vids, folder, max_bytes)
+                  create_7z_group(first_stem, vids, folder, max_bytes)
 
-          # Movies and loose videos are explicitly untouched here (NEVER zipped)
-
-          # 5. Move raw movies, remaining videos, and sidecar subtitles to root
           for r, dirs, files in os.walk(folder, topdown=False):
               if r == folder: continue
               for f in natsorted(files):
@@ -257,11 +221,10 @@ jobs:
               shutil.rmtree(r, ignore_errors=True)
           EOF
 
-      - name: Parallel Upload to Filemirage
+      - name: Upload to Vikingfile
         run: |
           python3 -u - << 'EOF'
           import os
-          import re
           import subprocess
           import requests
           import time
@@ -269,34 +232,30 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          FILEMIRAGE_API_TOKEN = os.environ.get('FILEMIRAGE_API_TOKEN', '9QQH-DGES-CWQZ-FXNV')
+          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
+          UPLOAD_URL = "https://vikingfile.com/api/upload"
           try:
-              srv_res = requests.get("https://filemirage.com/api/servers", timeout=10).json()
-              SERVER = srv_res['data']['server']
-          except Exception as e:
-              print(f"Failed to fetch Filemirage server: {e}")
-              exit(1)
+              srv_res = requests.get("https://vikingfile.com/api/servers", timeout=10).json()
+              if isinstance(srv_res, dict) and 'data' in srv_res and 'server' in srv_res['data']:
+                  UPLOAD_URL = f"{srv_res['data']['server']}/upload.php"
+          except Exception:
+              pass
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
-              
-              # Sanitize filenames containing commas or semicolons for curl form compliance
-              clean_filename = re.sub(r'[,;]', '_', filename)
-              if clean_filename != filename:
-                  new_file_path = os.path.join(os.path.dirname(file_path), clean_filename)
-                  os.rename(file_path, new_file_path)
-                  file_path = new_file_path
-                  filename = clean_filename
-
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆️ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              print(f"⬆ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
               curl_cmd = [
-                  "curl", "-X", "POST",
-                  f"{SERVER}/upload.php",
-                  "-H", f"Authorization: Bearer {FILEMIRAGE_API_TOKEN}",
+                  "curl", "-s", "-S",
+                  "--http2",
+                  "--tcp-nodelay",
+                  "-X", "POST",
+                  UPLOAD_URL,
+                  "-H", f"Authorization: Bearer {VIKINGFILE_API_TOKEN}",
+                  "-F", f"api_token={VIKINGFILE_API_TOKEN}",
                   "-F", f"file=@{file_path}",
                   "--max-time", "3600"
               ]
@@ -307,7 +266,9 @@ jobs:
               fl = fcntl.fcntl(fd, fcntl.F_GETFL)
               fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
               
-              last_print_time = time.time()
+              start_time = time.time()
+              last_print_time = 0
+              first_print_done = False
               buffer = b""
               
               while proc.poll() is None:
@@ -319,11 +280,18 @@ jobs:
                               lines = buffer.replace(b'\r', b'\n').split(b'\n')
                               buffer = lines[-1]
                               valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
-                              if valid_lines:
-                                  last_line = valid_lines[-1]
-                                  if time.time() - last_print_time >= 30:
+                              progress_lines = [L for L in valid_lines if not any(h in L for h in ['% Total', 'Dload', 'Upload'])]
+                              if progress_lines:
+                                  last_line = progress_lines[-1]
+                                  now = time.time()
+                                  if not first_print_done:
+                                      if now - start_time >= 2 or not last_line.startswith('0 '):
+                                          print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
+                                          first_print_done = True
+                                          last_print_time = now
+                                  elif now - last_print_time >= 30:
                                       print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
-                                      last_print_time = time.time()
+                                      last_print_time = now
                   except Exception:
                       pass
                   time.sleep(0.5)
