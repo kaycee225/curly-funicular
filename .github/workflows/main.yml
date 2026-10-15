@@ -1,4 +1,4 @@
-name: qBittorrent & Vikingfile
+name: qBittorrent & Dropdrive
 
 on:
   push:
@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      VIKINGFILE_API_TOKEN: '8IcySE8jai'
+      DROPDRIVE_API_TOKEN: 'snk2yZAzgu2fVcve'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
       KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
@@ -67,7 +67,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Vikingfile] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Dropdrive] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -90,7 +90,7 @@ jobs:
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
-                  print(f"🔄 [GH-qBittorrent-Vikingfile] Progress Update #{update_count} | {timestamp}")
+                  print(f"🔄 [GH-qBittorrent-Dropdrive] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
                   if not res:
                       print("📥 Waiting for active torrents...")
@@ -221,86 +221,97 @@ jobs:
               shutil.rmtree(r, ignore_errors=True)
           EOF
 
-      - name: Upload to Vikingfile
+      - name: Upload to Dropdrive (Chunked)
         run: |
           python3 -u - << 'EOF'
           import os
-          import subprocess
+          import math
           import requests
           import time
-          import fcntl
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '8IcySE8jai')
+          DROPDRIVE_API_TOKEN = os.environ.get('DROPDRIVE_API_TOKEN', 'snk2yZAzgu2fVcve')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
-
-          UPLOAD_URL = "https://vikingfile.com/api/upload"
-          try:
-              srv_res = requests.get("https://vikingfile.com/api/servers", timeout=10).json()
-              if isinstance(srv_res, dict) and 'data' in srv_res and 'server' in srv_res['data']:
-                  UPLOAD_URL = f"{srv_res['data']['server']}/upload.php"
-          except Exception:
-              pass
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
-              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
-              
-              curl_cmd = [
-                  "curl", "-s", "-S",
-                  "--tcp-nodelay",
-                  "-X", "POST",
-                  UPLOAD_URL,
-                  "-H", f"Authorization: Bearer {VIKINGFILE_API_TOKEN}",
-                  "-F", f"api_token={VIKINGFILE_API_TOKEN}",
-                  "-F", f"file=@{file_path}",
-                  "--max-time", "3600"
-              ]
-              
-              proc = subprocess.Popen(curl_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-              
-              fd = proc.stderr.fileno()
-              fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
-              
-              start_time = time.time()
-              last_print_time = 0
-              first_print_done = False
-              buffer = b""
-              
-              while proc.poll() is None:
-                  try:
-                      chunk = proc.stderr.read(1024)
-                      if chunk:
-                          buffer += chunk
-                          if b'\r' in buffer or b'\n' in buffer:
-                              lines = buffer.replace(b'\r', b'\n').split(b'\n')
-                              buffer = lines[-1]
-                              valid_lines = [L.decode('utf-8', errors='ignore').strip() for L in lines[:-1] if L.strip()]
-                              progress_lines = [L for L in valid_lines if not any(h in L for h in ['% Total', 'Dload', 'Upload'])]
-                              if progress_lines:
-                                  last_line = progress_lines[-1]
-                                  now = time.time()
-                                  if not first_print_done:
-                                      if now - start_time >= 2 or not last_line.startswith('0 '):
-                                          print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
-                                          first_print_done = True
-                                          last_print_time = now
-                                  elif now - last_print_time >= 30:
-                                      print(f"📤 Progress [{filename[:25]}]: {last_line}", flush=True)
-                                      last_print_time = now
-                  except Exception:
-                      pass
-                  time.sleep(0.5)
-                  
-              stdout, stderr = proc.communicate()
-              if proc.returncode == 0:
-                  print(f"✅ Finished uploading {filename}: {stdout.decode('utf-8', errors='ignore').strip()}", flush=True)
-              else:
-                  err_msg = stderr.decode('utf-8', errors='ignore').strip() if stderr else 'Unknown error'
-                  print(f"❌ Curl Error uploading {filename}: {err_msg}", flush=True)
+              file_size = os.path.getsize(file_path)
+              file_size_mb = file_size / (1024 * 1024)
+              print(f"⬆ [START] Uploading to Dropdrive: {filename} ({file_size_mb:.2f} MB)", flush=True)
+
+              chunk_size = 100_000_000  # Default 100 MB part size
+              try:
+                  cfg_res = requests.get("https://dropdrive.rip/api/config", timeout=10).json()
+                  if isinstance(cfg_res, dict) and 'chunkSize' in cfg_res:
+                      chunk_size = int(cfg_res['chunkSize'])
+              except Exception:
+                  pass
+
+              total_chunks = math.ceil(file_size / chunk_size)
+              if total_chunks == 0:
+                  total_chunks = 1
+
+              init_url = "https://dropdrive.rip/api/upload/init"
+              headers = {
+                  "Authorization": f"Bearer {DROPDRIVE_API_TOKEN}",
+                  "Content-Type": "application/json"
+              }
+              payload = {
+                  "fileName": filename,
+                  "fileSize": file_size,
+                  "totalChunks": total_chunks
+              }
+
+              try:
+                  init_res = requests.post(init_url, headers=headers, json=payload, timeout=30).json()
+                  session_id = init_res.get('sessionId') or init_res.get('data', {}).get('sessionId')
+                  storage_server_url = init_res.get('storageServerUrl') or init_res.get('data', {}).get('storageServerUrl')
+                  server_chunk_size = init_res.get('chunkSize') or init_res.get('data', {}).get('chunkSize')
+                  if server_chunk_size:
+                      chunk_size = int(server_chunk_size)
+                      total_chunks = math.ceil(file_size / chunk_size)
+                      if total_chunks == 0: total_chunks = 1
+
+                  if not session_id or not storage_server_url:
+                      print(f"❌ DropDrive Init Failed for {filename}: {init_res}", flush=True)
+                      return
+              except Exception as e:
+                  print(f"❌ DropDrive Init Exception for {filename}: {e}", flush=True)
+                  return
+
+              try:
+                  with open(file_path, "rb") as f:
+                      for i in range(total_chunks):
+                          chunk_data = f.read(chunk_size)
+                          is_last = (i == total_chunks - 1)
+                          
+                          part_url = f"{storage_server_url}/files/{session_id}/{i}"
+                          if is_last:
+                              part_url += "?last=1"
+
+                          part_headers = {"Content-Type": "application/octet-stream"}
+                          res = requests.post(part_url, headers=part_headers, data=chunk_data, timeout=300)
+                          if res.status_code not in (200, 201):
+                              print(f"❌ Failed uploading part {i+1}/{total_chunks} for {filename}: {res.text}", flush=True)
+                              return
+
+                          progress_pct = int(((i + 1) / total_chunks) * 100)
+                          print(f"📤 Progress [{filename[:25]}]: Part {i+1}/{total_chunks} ({progress_pct}%)", flush=True)
+              except Exception as e:
+                  print(f"❌ Error uploading chunks for {filename}: {e}", flush=True)
+                  return
+
+              complete_url = "https://dropdrive.rip/api/upload/complete"
+              complete_payload = {"sessionId": session_id}
+              try:
+                  comp_res = requests.post(complete_url, headers=headers, json=complete_payload, timeout=60).json()
+                  if comp_res.get('success') or 'fileId' in comp_res or 'downloadUrl' in comp_res:
+                      print(f"✅ Finished uploading {filename} to Dropdrive!", flush=True)
+                  else:
+                      print(f"⚠️ Completion response for {filename}: {comp_res}", flush=True)
+              except Exception as e:
+                  print(f"❌ Completion Exception for {filename}: {e}", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_queue = []
@@ -312,7 +323,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               
               if upload_queue:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files...", flush=True)
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files on Dropdrive...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           EOF
