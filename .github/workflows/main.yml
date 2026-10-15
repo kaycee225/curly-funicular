@@ -10,7 +10,7 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      VIKINGFILE_API_TOKEN: '9QQH-DGES-CWQZ-FXNV'
+      VIKINGFILE_API_TOKEN: '8IcySE8jai'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
       KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
@@ -150,7 +150,7 @@ jobs:
               os.chdir(base_dir)
               cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
               if folder_size > max_bytes_limit:
-                  cmd.insert(2, "-v5900m")
+                  cmd.insert(2, "-v4000m")
               subprocess.run(cmd, check=True)
               os.chdir(orig)
               shutil.rmtree(group_dir)
@@ -171,7 +171,7 @@ jobs:
                           zip_name = f"{item}.zip"
                           cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
                           if folder_size > max_bytes:
-                              cmd.insert(2, "-v5900m")
+                              cmd.insert(2, "-v4000m")
                           subprocess.run(cmd, check=True)
                           os.chdir(orig)
                           shutil.rmtree(item_path)
@@ -263,7 +263,7 @@ jobs:
               
               fd = proc.stderr.fileno()
               fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
               
               start_time = time.time()
               last_print_time = 0
