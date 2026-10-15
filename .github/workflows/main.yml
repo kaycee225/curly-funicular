@@ -2,7 +2,7 @@ name: qBittorrent & Vikingfile
 
 on:
   push:
-    branches: kaycee225-patch-3
+    branches: kaycee225-patch-4
     
   workflow_dispatch:
 
