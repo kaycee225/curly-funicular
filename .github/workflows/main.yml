@@ -232,7 +232,7 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '')
+          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '9QQH-DGES-CWQZ-FXNV')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
           UPLOAD_URL = "https://vikingfile.com/api/upload"
@@ -250,7 +250,6 @@ jobs:
               
               curl_cmd = [
                   "curl", "-s", "-S",
-                  "--http2",
                   "--tcp-nodelay",
                   "-X", "POST",
                   UPLOAD_URL,
