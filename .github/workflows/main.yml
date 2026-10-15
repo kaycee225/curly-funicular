@@ -232,7 +232,7 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '9QQH-DGES-CWQZ-FXNV')
+          VIKINGFILE_API_TOKEN = os.environ.get('VIKINGFILE_API_TOKEN', '8IcySE8jai')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
           UPLOAD_URL = "https://vikingfile.com/api/upload"
@@ -263,7 +263,7 @@ jobs:
               
               fd = proc.stderr.fileno()
               fl = fcntl.fcntl(fd, fcntl.F_GETFL)
-              fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
+             fcntl.fcntl(fd, fcntl.F_SETFL, fl | os.O_NONBLOCK)
               
               start_time = time.time()
               last_print_time = 0
