@@ -44,7 +44,7 @@ jobs:
           sleep 5
 
           python3 - << 'EOF'
-          import requests, time, os
+          import requests, time, os, re
           from datetime import datetime
 
           link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
@@ -53,11 +53,22 @@ jobs:
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
+          completed_movie_keys = set()
 
           def fmt_eta(sec):
               if sec is None or sec < 0 or sec >= 8640000: return "∞"
               m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
               return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          def get_clean_movie_key(name):
+              n = re.sub(r'[\._]', ' ', name.lower())
+              match = re.search(r'^(.*?)(?:\b(19\d{2}|20\d{2})\b|\b(720p|1080p|2160p|4k|bluray|web-dl|webrip|hdts)\b)', n)
+              if match:
+                  cleaned = match.group(1).strip()
+              else:
+                  cleaned = n.split()[0] if n else n
+              cleaned = re.sub(r'[^a-z0-9\s]', '', cleaned).strip()
+              return cleaned
 
           while True:
               update_count += 1
@@ -102,6 +113,24 @@ jobs:
                           speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
                           eta_str = fmt_eta(t.get('eta', -1))
                           print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                          
+                          if prog >= 100:
+                              c_key = get_clean_movie_key(t['name'])
+                              if c_key and c_key not in completed_movie_keys:
+                                  completed_movie_keys.add(c_key)
+                                  dupes_to_delete = []
+                                  for other_t in res:
+                                      if other_t['hash'] != t['hash']:
+                                          other_key = get_clean_movie_key(other_t['name'])
+                                          if other_key == c_key:
+                                              dupes_to_delete.append(other_t['hash'])
+                                  if dupes_to_delete:
+                                      print(f"🗑️ [Duplicate Cleaner] '{t['name']}' finished! Removing {len(dupes_to_delete)} duplicate torrent(s)...", flush=True)
+                                      requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={
+                                          'hashes': '|'.join(dupes_to_delete),
+                                          'deleteFiles': 'true'
+                                      })
+
                           if prog < 100: all_done = False
                   print("="*50 + "\n")
                   if all_done and res: break
