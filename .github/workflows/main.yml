@@ -1,8 +1,8 @@
-name: qBittorrent & MixLoads
+name: qBittorrent & Dropdrive
 
 on:
   push:
-    branches: kaycee225-patch-5
+    branches: kaycee225-patch-6
     
   workflow_dispatch:
 
@@ -10,17 +10,16 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      MIXLOADS_API_KEY: '364g0xjom92il183l9p'
+      DROPDRIVE_API_TOKEN: 'snk2yZAzgu2fVcve'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
       KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Dependencies
         run: |
-          sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
+          sudo apt update && sudo apt install qbittorrent-nox jq curl wget zip p7zip-full python3 python3-requests python3-pip -y
           sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
       - name: Download with qBittorrent & Boxed Progress
@@ -45,20 +44,32 @@ jobs:
           sleep 5
 
           python3 - << 'EOF'
-          import requests, time, os
+          import requests, time, os, re, subprocess, urllib.parse
           from datetime import datetime
 
-          link_url = os.environ.get('LINK_FETCH_URL')
-          kill_url = os.environ.get('KILL_SWITCH_URL')
-          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
+          completed_movie_keys = set()
+          wget_processes = []
 
           def fmt_eta(sec):
               if sec is None or sec < 0 or sec >= 8640000: return "∞"
               m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
               return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          def get_clean_movie_key(name):
+              n = re.sub(r'[\._]', ' ', name.lower())
+              match = re.search(r'^(.*?)(?:\b(19\d{2}|20\d{2})\b|\b(720p|1080p|2160p|4k|bluray|web-dl|webrip|hdts)\b)', n)
+              if match:
+                  cleaned = match.group(1).strip()
+              else:
+                  cleaned = n.split()[0] if n else n
+              cleaned = re.sub(r'[^a-z0-9\s]', '', cleaned).strip()
+              return cleaned
 
           while True:
               update_count += 1
@@ -68,7 +79,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-MixLoads] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Dropdrive] Global kill switch activated! | {timestamp}\n" + "="*50)
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -84,28 +95,67 @@ jobs:
                       for link in page.splitlines():
                           link = link.strip()
                           if link and not link.startswith('#') and link not in added_links:
-                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              if link.startswith('magnet:') or link.endswith('.torrent') or '.torrent' in link.lower():
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              else:
+                                  parsed = urllib.parse.urlparse(link)
+                                  filename = os.path.basename(parsed.path)
+                                  if not filename:
+                                      filename = "downloaded_file"
+                                  filename = filename.split('?')[0].split('#')[0]
+                                  dest_path = os.path.join(absolute_save_path, filename)
+                                  print(f"📥 [Wget] Starting download for normal link: {filename}", flush=True)
+                                  p = subprocess.Popen(["wget", "-c", "-O", dest_path, link])
+                                  wget_processes.append(p)
                               added_links.add(link)
                   except Exception: pass
 
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
                   print(f"\n" + "="*50)
-                  print(f"🔄 [GH-qBittorrent-MixLoads] Progress Update #{update_count} | {timestamp}")
+                  print(f"🔄 [GH-qBittorrent-Dropdrive] Progress Update #{update_count} | {timestamp}")
                   print("-"*50)
-                  if not res:
-                      print("📥 Waiting for active torrents...")
+                  
+                  wget_active = [p for p in wget_processes if p.poll() is None]
+                  if wget_active:
+                      print(f"📥 Active Wget downloads in progress: {len(wget_active)}")
+
+                  if not res and not wget_active:
+                      print("📥 Waiting for active torrents or downloads...")
                       all_done = False
                   else:
                       all_done = True
-                      for t in res:
-                          prog = int(t.get('progress', 0) * 100)
-                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
-                          eta_str = fmt_eta(t.get('eta', -1))
-                          print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                          if prog < 100: all_done = False
+                      if res:
+                          for t in res:
+                              prog = int(t.get('progress', 0) * 100)
+                              speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                              eta_str = fmt_eta(t.get('eta', -1))
+                              print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                              
+                              if prog >= 100:
+                                  c_key = get_clean_movie_key(t['name'])
+                                  if c_key and c_key not in completed_movie_keys:
+                                      completed_movie_keys.add(c_key)
+                                      dupes_to_delete = []
+                                      for other_t in res:
+                                          if other_t['hash'] != t['hash']:
+                                              other_key = get_clean_movie_key(other_t['name'])
+                                              if other_key == c_key:
+                                                  dupes_to_delete.append(other_t['hash'])
+                                      if dupes_to_delete:
+                                          print(f"🗑️ [Duplicate Cleaner] '{t['name']}' finished! Removing {len(dupes_to_delete)} duplicate torrent(s)...", flush=True)
+                                          requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={
+                                              'hashes': '|'.join(dupes_to_delete),
+                                              'deleteFiles': 'true'
+                                          })
+
+                              if prog < 100: all_done = False
+
+                      if wget_active:
+                          all_done = False
+
                   print("="*50 + "\n")
-                  if all_done and res: break
+                  if all_done: break
               except Exception: pass
               time.sleep(20)
           EOF
@@ -222,58 +272,97 @@ jobs:
               shutil.rmtree(r, ignore_errors=True)
           EOF
 
-      - name: Upload to MixLoads
+      - name: Upload to Dropdrive (Chunked)
         run: |
           python3 -u - << 'EOF'
           import os
+          import math
           import requests
+          import time
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          MIXLOADS_API_KEY = os.environ.get('MIXLOADS_API_KEY', '364g0xjom92il183l9p')
+          DROPDRIVE_API_TOKEN = os.environ.get('DROPDRIVE_API_TOKEN', 'snk2yZAzgu2fVcve')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
-              file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆ [START] Uploading to MixLoads: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              file_size = os.path.getsize(file_path)
+              file_size_mb = file_size / (1024 * 1024)
+              print(f"⬆ [START] Uploading to Dropdrive: {filename} ({file_size_mb:.2f} MB)", flush=True)
 
-              # Step 1: Request Upload Server and Session ID
-              server_url = f"https://mixloads.to/api/upload/server?key={MIXLOADS_API_KEY}"
+              chunk_size = 100_000_000  # Default 100 MB part size
               try:
-                  srv_res = requests.get(server_url, timeout=30).json()
-                  if srv_res.get("status") != 200:
-                      print(f"❌ MixLoads Server Allocation Failed for {filename}: {srv_res.get('msg')}", flush=True)
-                      return
+                  cfg_res = requests.get("https://dropdrive.rip/api/config", timeout=10).json()
+                  if isinstance(cfg_res, dict) and 'chunkSize' in cfg_res:
+                      chunk_size = int(cfg_res['chunkSize'])
+              except Exception:
+                  pass
 
-                  sess_id = srv_res.get("sess_id")
-                  upload_target_url = srv_res.get("result")
+              total_chunks = math.ceil(file_size / chunk_size)
+              if total_chunks == 0:
+                  total_chunks = 1
+
+              init_url = "https://dropdrive.rip/api/upload/init"
+              headers = {
+                  "Authorization": f"Bearer {DROPDRIVE_API_TOKEN}",
+                  "Content-Type": "application/json"
+              }
+              payload = {
+                  "fileName": filename,
+                  "fileSize": file_size,
+                  "totalChunks": total_chunks
+              }
+
+              try:
+                  init_res = requests.post(init_url, headers=headers, json=payload, timeout=30).json()
+                  session_id = init_res.get('sessionId') or init_res.get('data', {}).get('sessionId')
+                  storage_server_url = init_res.get('storageServerUrl') or init_res.get('data', {}).get('storageServerUrl')
+                  server_chunk_size = init_res.get('chunkSize') or init_res.get('data', {}).get('chunkSize')
+                  if server_chunk_size:
+                      chunk_size = int(server_chunk_size)
+                      total_chunks = math.ceil(file_size / chunk_size)
+                      if total_chunks == 0: total_chunks = 1
+
+                  if not session_id or not storage_server_url:
+                      print(f"❌ DropDrive Init Failed for {filename}: {init_res}", flush=True)
+                      return
               except Exception as e:
-                  print(f"❌ Exception fetching MixLoads server info for {filename}: {e}", flush=True)
+                  print(f"❌ DropDrive Init Exception for {filename}: {e}", flush=True)
                   return
 
-              # Step 2: Form Upload to Assigned Server
-              payload = {
-                  "sess_id": sess_id,
-                  "utype": "prem"
-              }
-              
               try:
                   with open(file_path, "rb") as f:
-                      files = {"file_0": (filename, f)}
-                      res = requests.post(upload_target_url, data=payload, files=files, timeout=3600).json()
+                      for i in range(total_chunks):
+                          chunk_data = f.read(chunk_size)
+                          is_last = (i == total_chunks - 1)
+                          
+                          part_url = f"{storage_server_url}/files/{session_id}/{i}"
+                          if is_last:
+                              part_url += "?last=1"
 
-                  if isinstance(res, list) and len(res) > 0:
-                      file_code = res[0].get("file_code")
-                      file_status = res[0].get("file_status")
-                      if file_status == "OK":
-                          print(f"✅ Finished uploading {filename} to MixLoads! URL: https://mixloads.to/{file_code}", flush=True)
-                      else:
-                          print(f"⚠️ Upload status for {filename}: {file_status}", flush=True)
-                  else:
-                      print(f"❌ Unexpected response for {filename}: {res}", flush=True)
+                          part_headers = {"Content-Type": "application/octet-stream"}
+                          res = requests.post(part_url, headers=part_headers, data=chunk_data, timeout=300)
+                          if res.status_code not in (200, 201):
+                              print(f"❌ Failed uploading part {i+1}/{total_chunks} for {filename}: {res.text}", flush=True)
+                              return
+
+                          progress_pct = int(((i + 1) / total_chunks) * 100)
+                          print(f"📤 Progress [{filename[:25]}]: Part {i+1}/{total_chunks} ({progress_pct}%)", flush=True)
               except Exception as e:
-                  print(f"❌ Upload exception for {filename}: {e}", flush=True)
+                  print(f"❌ Error uploading chunks for {filename}: {e}", flush=True)
+                  return
+
+              complete_url = "https://dropdrive.rip/api/upload/complete"
+              complete_payload = {"sessionId": session_id}
+              try:
+                  comp_res = requests.post(complete_url, headers=headers, json=complete_payload, timeout=60).json()
+                  if comp_res.get('success') or 'fileId' in comp_res or 'downloadUrl' in comp_res:
+                      print(f"✅ Finished uploading {filename} to Dropdrive!", flush=True)
+                  else:
+                      print(f"⚠️ Completion response for {filename}: {comp_res}", flush=True)
+              except Exception as e:
+                  print(f"❌ Completion Exception for {filename}: {e}", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_queue = []
@@ -285,7 +374,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               
               if upload_queue:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files on MixLoads...", flush=True)
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files on Dropdrive...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           EOF
