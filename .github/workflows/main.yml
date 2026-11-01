@@ -2,7 +2,7 @@ name: qBittorrent & Filester
 
 on:
   push:
-    branches: New
+    branches: kaycee225-patch-5
     
   workflow_dispatch:
 
