@@ -1,8 +1,8 @@
-name: qBittorrent & MixLoads
+name: qBittorrent & Filester
 
 on:
   push:
-    branches: kaycee225-patch-5
+    branches: New
     
   workflow_dispatch:
 
@@ -10,20 +10,19 @@ jobs:
   torrent-upload:
     runs-on: ubuntu-latest
     env:
-      MIXLOADS_API_KEY: '364g0xjom92il183l9p'
+      FILESTER_API_TOKEN: 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC'
       FOLDER_PATH: 'downloaded_files'
       LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
       KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Dependencies
         run: |
           sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
           sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
-      - name: Download with qBittorrent & Boxed Progress
+      - name: Download with qBittorrent & Standard Progress
         run: |
           mkdir -p "$FOLDER_PATH"
           touch added_links.txt
@@ -48,9 +47,9 @@ jobs:
           import requests, time, os
           from datetime import datetime
 
-          link_url = os.environ.get('LINK_FETCH_URL')
-          kill_url = os.environ.get('KILL_SWITCH_URL')
-          folder_path = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          folder_path = 'downloaded_files'
           absolute_save_path = os.path.abspath(folder_path)
           added_links = set()
           update_count = 0
@@ -68,7 +67,7 @@ jobs:
                   try:
                       ks = requests.get(kill_url, timeout=5).text
                       if "STOP.ALL.TORRENTS" in ks:
-                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-MixLoads] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          print(f"🛑 [GH-qBittorrent-Filester] Global kill switch activated! | {timestamp}")
                           break
                       targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
                       if targets:
@@ -90,9 +89,7 @@ jobs:
 
               try:
                   res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-                  print(f"\n" + "="*50)
-                  print(f"🔄 [GH-qBittorrent-MixLoads] Progress Update #{update_count} | {timestamp}")
-                  print("-"*50)
+                  print(f"🔄 [GH-qBittorrent-Filester] Progress Update #{update_count} | {timestamp}")
                   if not res:
                       print("📥 Waiting for active torrents...")
                       all_done = False
@@ -104,7 +101,6 @@ jobs:
                           eta_str = fmt_eta(t.get('eta', -1))
                           print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
                           if prog < 100: all_done = False
-                  print("="*50 + "\n")
                   if all_done and res: break
               except Exception: pass
               time.sleep(20)
@@ -113,167 +109,54 @@ jobs:
           pkill qbittorrent-nox || true
           sleep 2
 
-      - name: Smart Zipping & Splitting
-        run: |
-          python3 -u - << 'EOF'
-          import os, shutil, subprocess, re
-          from collections import defaultdict
-          from natsort import natsorted
-
-          folder = os.environ.get("FOLDER_PATH", "downloaded_files")
-          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
-          media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
-          max_bytes = 10000 * 1024 * 1024
-
-          def get_dir_size(p):
-              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
-
-          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
-              group_dir = os.path.join(base_dir, group_name)
-              os.makedirs(group_dir, exist_ok=True)
-              
-              files_to_move = list(file_paths)
-              for p in file_paths:
-                  base_stem = os.path.splitext(p)[0]
-                  for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
-                      sub_file = base_stem + sub_ext
-                      if os.path.exists(sub_file) and sub_file not in files_to_move:
-                          files_to_move.append(sub_file)
-
-              for p in files_to_move:
-                  dst = os.path.join(group_dir, os.path.basename(p))
-                  if p != dst and not os.path.exists(dst):
-                      shutil.move(p, dst)
-              
-              folder_size = get_dir_size(group_dir)
-              zip_name = f"{group_name}.zip"
-              orig = os.getcwd()
-              os.chdir(base_dir)
-              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
-              if folder_size > max_bytes_limit:
-                  cmd.insert(2, "-v4000m")
-              subprocess.run(cmd, check=True)
-              os.chdir(orig)
-              shutil.rmtree(group_dir)
-
-          if os.path.exists(folder):
-              for item in natsorted(os.listdir(folder)):
-                  item_path = os.path.join(folder, item)
-                  if os.path.isdir(item_path):
-                      vids = natsorted([
-                          os.path.join(r, f) for r, _, files in os.walk(item_path)
-                          for f in files if f.lower().endswith(video_ext)
-                      ])
-                      if len(vids) > 3:
-                          print(f"📦 Zipping folder: {item}")
-                          folder_size = get_dir_size(item_path)
-                          orig = os.getcwd()
-                          os.chdir(folder)
-                          zip_name = f"{item}.zip"
-                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
-                          if folder_size > max_bytes:
-                              cmd.insert(2, "-v4000m")
-                          subprocess.run(cmd, check=True)
-                          os.chdir(orig)
-                          shutil.rmtree(item_path)
-
-          all_videos = []
-          for r, _, files in os.walk(folder):
-              for f in files:
-                  if f.lower().endswith(video_ext):
-                      all_videos.append(os.path.join(r, f))
-
-          all_videos = natsorted(all_videos)
-
-          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
-          
-          series_groups = defaultdict(list)
-          unmatched_videos = []
-
-          for vid_path in all_videos:
-              vid_name = os.path.basename(vid_path)
-              parent_name = os.path.basename(os.path.dirname(vid_path))
-              match = series_regex.search(vid_name) or series_regex.search(parent_name)
-              
-              if match:
-                  raw_title = match.group(1) or "Season"
-                  s_num = match.group(2)
-                  clean_title = re.sub(r"['’]", "", raw_title)
-                  clean_title = re.sub(r"[\W_]+", " ", clean_title).strip().lower()
-                  group_key = f"{clean_title}_S{s_num}"
-                  series_groups[group_key].append(vid_path)
-              else:
-                  unmatched_videos.append(vid_path)
-
-          for group_key in natsorted(series_groups.keys()):
-              vids = natsorted(series_groups[group_key])
-              if len(vids) > 3:
-                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
-                  create_7z_group(first_stem, vids, folder, max_bytes)
-
-          for r, dirs, files in os.walk(folder, topdown=False):
-              if r == folder: continue
-              for f in natsorted(files):
-                  if f.lower().endswith(media_ext):
-                      src = os.path.join(r, f)
-                      dst = os.path.join(folder, f)
-                      if not os.path.exists(dst): 
-                          shutil.move(src, dst)
-              shutil.rmtree(r, ignore_errors=True)
-          EOF
-
-      - name: Upload to MixLoads
+      - name: Upload to Filester
         run: |
           python3 -u - << 'EOF'
           import os
-          import requests
+          import subprocess
+          import sys
+          import time
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          MIXLOADS_API_KEY = os.environ.get('MIXLOADS_API_KEY', '364g0xjom92il183l9p')
+          FILESTER_API_TOKEN = os.environ.get('FILESTER_API_TOKEN', 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloaded_files')
+          UPLOAD_URL = "https://u1.filester.me/api/v1/upload"
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆ [START] Uploading to MixLoads: {filename} ({file_size_mb:.2f} MB)", flush=True)
-
-              # Step 1: Request Upload Server and Session ID
-              server_url = f"https://mixloads.to/api/upload/server?key={MIXLOADS_API_KEY}"
-              try:
-                  srv_res = requests.get(server_url, timeout=30).json()
-                  if srv_res.get("status") != 200:
-                      print(f"❌ MixLoads Server Allocation Failed for {filename}: {srv_res.get('msg')}", flush=True)
-                      return
-
-                  sess_id = srv_res.get("sess_id")
-                  upload_target_url = srv_res.get("result")
-              except Exception as e:
-                  print(f"❌ Exception fetching MixLoads server info for {filename}: {e}", flush=True)
-                  return
-
-              # Step 2: Form Upload to Assigned Server
-              payload = {
-                  "sess_id": sess_id,
-                  "utype": "prem"
-              }
+              print(f"⬆ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
-              try:
-                  with open(file_path, "rb") as f:
-                      files = {"file_0": (filename, f)}
-                      res = requests.post(upload_target_url, data=payload, files=files, timeout=3600).json()
-
-                  if isinstance(res, list) and len(res) > 0:
-                      file_code = res[0].get("file_code")
-                      file_status = res[0].get("file_status")
-                      if file_status == "OK":
-                          print(f"✅ Finished uploading {filename} to MixLoads! URL: https://mixloads.to/{file_code}", flush=True)
-                      else:
-                          print(f"⚠️ Upload status for {filename}: {file_status}", flush=True)
-                  else:
-                      print(f"❌ Unexpected response for {filename}: {res}", flush=True)
-              except Exception as e:
-                  print(f"❌ Upload exception for {filename}: {e}", flush=True)
+              curl_cmd = [
+                  "curl", "-s", "-S", "-X", "POST",
+                  UPLOAD_URL,
+                  "-H", f"Authorization: Bearer {FILESTER_API_TOKEN}",
+                  "-F", f"file=@{file_path}",
+                  "--max-time", "3600"
+              ]
+              
+              process = subprocess.Popen(
+                  curl_cmd,
+                  stdout=subprocess.PIPE,
+                  stderr=subprocess.STDOUT,
+                  text=True,
+                  bufsize=1
+              ]
+              
+              output_lines = []
+              for line in iter(process.stdout.readline, ''):
+                  if line.strip():
+                      print(f"📤 [{filename[:20]}]: {line.strip()}", flush=True)
+                      output_lines.append(line.strip())
+                      
+              process.wait()
+              
+              full_output = " ".join(output_lines)
+              if process.returncode == 0:
+                  print(f"✅ Finished uploading {filename}: {full_output}", flush=True)
+              else:
+                  print(f"❌ Curl Error uploading {filename}: {full_output}", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_queue = []
@@ -285,7 +168,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               
               if upload_queue:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files on MixLoads...", flush=True)
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           EOF
