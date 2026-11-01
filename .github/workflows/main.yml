@@ -209,7 +209,7 @@ jobs:
               title = re.sub(r'\b(1080p|720p|2160p|4k|bluray|webrip|web-dl|hdrip|brrip|cam|ts|x264|x265|hevc|remux)\b.*', '', title)
               return re.sub(r'[^a-z0-9 ]+', '', title).strip()
 
-          def monitor_qbit_downloads(max_timeout=36000):
+          def monitor_qbit_downloads(max_timeout=52000):
               start_time = time.time()
               last_print_time = time.time()
               
