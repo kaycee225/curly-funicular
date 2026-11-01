@@ -352,11 +352,11 @@ jobs:
           FILESTER_API_TOKEN = os.environ.get('FILESTER_API_TOKEN', 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloads')
           UPLOAD_URL = "https://u1.filester.me/api/v1/upload"
+          MAX_RETRIES = 3
 
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆ [START] Uploading to Filester: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
               curl_cmd = [
                   "curl", "-s", "-S", "-X", "POST",
@@ -366,34 +366,48 @@ jobs:
                   "--max-time", "3600"
               ]
               
-              process = subprocess.Popen(
-                  curl_cmd,
-                  stdout=subprocess.PIPE,
-                  stderr=subprocess.STDOUT,
-                  text=True,
-                  bufsize=1
-              )
-              
-              output_lines = []
-              for line in iter(process.stdout.readline, ''):
-                  if line.strip():
-                      print(f"📤 [{filename[:20]}]: {line.strip()}", flush=True)
-                      output_lines.append(line.strip())
-                      
-              process.wait()
-              
-              full_output = " ".join(output_lines)
-              if process.returncode == 0:
-                  print(f"✅ Finished uploading {filename} to Filester: {full_output}", flush=True)
-              else:
-                  print(f"❌ Curl Error uploading {filename}: {full_output}", flush=True)
+              for attempt in range(1, MAX_RETRIES + 1):
+                  print(f"⬆ [START - Attempt {attempt}/{MAX_RETRIES}] Uploading to Filester: {filename} ({file_size_mb:.2f} MB)", flush=True)
+                  
+                  process = subprocess.Popen(
+                      curl_cmd,
+                      stdout=subprocess.PIPE,
+                      stderr=subprocess.STDOUT,
+                      text=True,
+                      bufsize=1
+                  )
+                  
+                  output_lines = []
+                  for line in iter(process.stdout.readline, ''):
+                      if line.strip():
+                          print(f"📤 [{filename[:20]}]: {line.strip()}", flush=True)
+                          output_lines.append(line.strip())
+                          
+                  process.wait()
+                  full_output = " ".join(output_lines)
+                  
+                  if process.returncode == 0:
+                      print(f"✅ Finished uploading {filename} to Filester: {full_output}", flush=True)
+                      return
+                  else:
+                      print(f"⚠️ Curl Error (Attempt {attempt}/{MAX_RETRIES}) uploading {filename}: {full_output}", flush=True)
+                      if attempt < MAX_RETRIES:
+                          sleep_time = attempt * 5
+                          print(f"🔄 Retrying upload for {filename} in {sleep_time} seconds...", flush=True)
+                          time.sleep(sleep_time)
+                      else:
+                          print(f"❌ Permanently failed uploading {filename} after {MAX_RETRIES} attempts.", flush=True)
 
           if os.path.exists(FOLDER_PATH):
               upload_queue = []
               for root, dirs, files in os.walk(FOLDER_PATH):
                   for filename in files:
-                      if not any(ext in filename for ext in [".!qB", ".part", ".aria2"]):
-                          upload_queue.append(os.path.join(root, filename))
+                      # Skip temporary files, part files, nfo, and txt files
+                      lower_name = filename.lower()
+                      if any(ext in lower_name for ext in [".!qB", ".part", ".aria2", ".nfo", ".txt"]):
+                          print(f"⏭️ Skipping excluded file type: {filename}", flush=True)
+                          continue
+                      upload_queue.append(os.path.join(root, filename))
               
               upload_queue = natsorted(upload_queue)
               
