@@ -1,4 +1,4 @@
-name: qBittorrent & Filester
+name: Filester 200MB Test Upload
 
 on:
   push:
@@ -7,107 +7,24 @@ on:
   workflow_dispatch:
 
 jobs:
-  torrent-upload:
+  test-upload:
     runs-on: ubuntu-latest
     env:
       FILESTER_API_TOKEN: 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC'
       FOLDER_PATH: 'downloaded_files'
-      LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
-      KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
       - name: Install Dependencies
         run: |
-          sudo apt update && sudo apt install qbittorrent-nox jq curl zip p7zip-full python3 python3-requests python3-pip -y
+          sudo apt update && sudo apt install curl jq python3 python3-requests python3-pip -y
           sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
-      - name: Download with qBittorrent & Standard Progress
+      - name: Create 200MB Test File
         run: |
           mkdir -p "$FOLDER_PATH"
-          touch added_links.txt
-          mkdir -p ~/.config/qBittorrent
-          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
-          [LegalNotice]
-          Accepted=true
-          [Preferences]
-          WebUI\Port=8080
-          WebUI\LocalHostAuth=false
-          WebUI\AuthSubnetWhitelist=127.0.0.1/32
-          WebUI\AuthSubnetWhitelistEnabled=true
-          Queueing\QueueEnabled=true
-          Queueing\MaxActiveDownloads=10
-          Queueing\MaxActiveTorrents=25
-          EOF
-
-          qbittorrent-nox -d
-          sleep 5
-
-          python3 - << 'EOF'
-          import requests, time, os
-          from datetime import datetime
-
-          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
-          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
-          folder_path = 'downloaded_files'
-          absolute_save_path = os.path.abspath(folder_path)
-          added_links = set()
-          update_count = 0
-
-          def fmt_eta(sec):
-              if sec is None or sec < 0 or sec >= 8640000: return "∞"
-              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
-              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
-
-          while True:
-              update_count += 1
-              timestamp = datetime.now().strftime("%H:%M:%S")
-
-              if kill_url:
-                  try:
-                      ks = requests.get(kill_url, timeout=5).text
-                      if "STOP.ALL.TORRENTS" in ks:
-                          print(f"🛑 [GH-qBittorrent-Filester] Global kill switch activated! | {timestamp}")
-                          break
-                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
-                      if targets:
-                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-                          for t in res:
-                              if any(tg in t['name'].lower() for tg in targets if tg):
-                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
-                  except Exception: pass
-
-              if link_url:
-                  try:
-                      page = requests.get(link_url, timeout=5).text
-                      for link in page.splitlines():
-                          link = link.strip()
-                          if link and not link.startswith('#') and link not in added_links:
-                              requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
-                              added_links.add(link)
-                  except Exception: pass
-
-              try:
-                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
-                  print(f"🔄 [GH-qBittorrent-Filester] Progress Update #{update_count} | {timestamp}")
-                  if not res:
-                      print("📥 Waiting for active torrents...")
-                      all_done = False
-                  else:
-                      all_done = True
-                      for t in res:
-                          prog = int(t.get('progress', 0) * 100)
-                          speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
-                          eta_str = fmt_eta(t.get('eta', -1))
-                          print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
-                          if prog < 100: all_done = False
-                  if all_done and res: break
-              except Exception: pass
-              time.sleep(20)
-          EOF
-
-          pkill qbittorrent-nox || true
-          sleep 2
+          echo "Generating 200MB test file for upload verification..."
+          dd if=/dev/urandom of="$FOLDER_PATH/test_upload_file.mp4" bs=1M count=200 status=progress
 
       - name: Upload to Filester
         run: |
@@ -142,7 +59,7 @@ jobs:
                   stderr=subprocess.STDOUT,
                   text=True,
                   bufsize=1
-              ]
+              )
               
               output_lines = []
               for line in iter(process.stdout.readline, ''):
@@ -168,7 +85,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               
               if upload_queue:
-                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files...", flush=True)
+                  print(f"🚀 Launching parallel upload workers for {len(upload_queue)} files...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           EOF
