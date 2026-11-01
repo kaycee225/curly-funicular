@@ -1,4 +1,4 @@
-name: Filester 200MB Test Upload
+name: qBittorrent & Filester
 
 on:
   push:
@@ -7,24 +7,270 @@ on:
   workflow_dispatch:
 
 jobs:
-  test-upload:
+  torrent-upload:
     runs-on: ubuntu-latest
     env:
       FILESTER_API_TOKEN: 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC'
       FOLDER_PATH: 'downloaded_files'
+      LINK_FETCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+      KILL_SWITCH_URL: 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
 
     steps:
       - uses: actions/checkout@v4
       - name: Install Dependencies
         run: |
-          sudo apt update && sudo apt install curl jq python3 python3-requests python3-pip -y
+          sudo apt update && sudo apt install qbittorrent-nox jq curl wget zip p7zip-full python3 python3-requests python3-pip -y
           sudo python3 -m pip install --no-cache-dir --break-system-packages natsort
 
-      - name: Create 200MB Test File
+      - name: Download with qBittorrent & Standard Progress
         run: |
           mkdir -p "$FOLDER_PATH"
-          echo "Generating 200MB test file for upload verification..."
-          dd if=/dev/urandom of="$FOLDER_PATH/test_upload_file.mp4" bs=1M count=200 status=progress
+          touch added_links.txt
+          mkdir -p ~/.config/qBittorrent
+          cat << 'EOF' > ~/.config/qBittorrent/qBittorrent.conf
+          [LegalNotice]
+          Accepted=true
+          [Preferences]
+          WebUI\Port=8080
+          WebUI\LocalHostAuth=false
+          WebUI\AuthSubnetWhitelist=127.0.0.1/32
+          WebUI\AuthSubnetWhitelistEnabled=true
+          Queueing\QueueEnabled=true
+          Queueing\MaxActiveDownloads=10
+          Queueing\MaxActiveTorrents=25
+          EOF
+
+          qbittorrent-nox -d
+          sleep 5
+
+          python3 - << 'EOF'
+          import requests, time, os, re, subprocess, urllib.parse
+          from datetime import datetime
+
+          link_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          kill_url = 'https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe'
+          folder_path = 'downloaded_files'
+          absolute_save_path = os.path.abspath(folder_path)
+          added_links = set()
+          update_count = 0
+          completed_movie_keys = set()
+          wget_processes = []
+
+          def fmt_eta(sec):
+              if sec is None or sec < 0 or sec >= 8640000: return "∞"
+              m, s = divmod(int(sec), 60); h, m = divmod(m, 60)
+              return f"{h}h {m}m {s}s" if h else (f"{m}m {s}s" if m else f"{s}s")
+
+          def get_clean_movie_key(name):
+              n = re.sub(r'[\._]', ' ', name.lower())
+              match = re.search(r'^(.*?)(?:\b(19\d{2}|20\d{2})\b|\b(720p|1080p|2160p|4k|bluray|web-dl|webrip|hdts)\b)', n)
+              if match:
+                  cleaned = match.group(1).strip()
+              else:
+                  cleaned = n.split()[0] if n else n
+              cleaned = re.sub(r'[^a-z0-9\s]', '', cleaned).strip()
+              return cleaned
+
+          while True:
+              update_count += 1
+              timestamp = datetime.now().strftime("%H:%M:%S")
+
+              if kill_url:
+                  try:
+                      ks = requests.get(kill_url, timeout=5).text
+                      if "STOP.ALL.TORRENTS" in ks:
+                          print("\n" + "="*50 + f"\n🛑 [GH-qBittorrent-Filester] Global kill switch activated! | {timestamp}\n" + "="*50)
+                          break
+                      targets = [l.replace(' NO','').strip().lower() for l in ks.splitlines() if l.endswith(' NO') and l.strip()]
+                      if targets:
+                          res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                          for t in res:
+                              if any(tg in t['name'].lower() for tg in targets if tg):
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={'hashes': t['hash'], 'deleteFiles': 'true'})
+                  except Exception: pass
+
+              if link_url:
+                  try:
+                      page = requests.get(link_url, timeout=5).text
+                      for link in page.splitlines():
+                          link = link.strip()
+                          if link and not link.startswith('#') and link not in added_links:
+                              if link.startswith('magnet:') or link.endswith('.torrent') or '.torrent' in link.lower():
+                                  requests.post('http://127.0.0.1:8080/api/v2/torrents/add', data={'urls': link, 'savepath': absolute_save_path})
+                              else:
+                                  parsed = urllib.parse.urlparse(link)
+                                  filename = os.path.basename(parsed.path)
+                                  if not filename:
+                                      filename = "downloaded_file"
+                                  filename = filename.split('?')[0].split('#')[0]
+                                  dest_path = os.path.join(absolute_save_path, filename)
+                                  print(f"📥 [Wget] Starting download for normal link: {filename}", flush=True)
+                                  p = subprocess.Popen(["wget", "-c", "-O", dest_path, link])
+                                  wget_processes.append(p)
+                              added_links.add(link)
+                  except Exception: pass
+
+              try:
+                  res = requests.get('http://127.0.0.1:8080/api/v2/torrents/info').json()
+                  print(f"\n" + "="*50)
+                  print(f"🔄 [GH-qBittorrent-Filester] Progress Update #{update_count} | {timestamp}")
+                  print("-"*50)
+                  
+                  wget_active = [p for p in wget_processes if p.poll() is None]
+                  if wget_active:
+                      print(f"📥 Active Wget downloads in progress: {len(wget_active)}")
+
+                  if not res and not wget_active:
+                      print("📥 Waiting for active torrents or downloads...")
+                      all_done = False
+                  else:
+                      all_done = True
+                      if res:
+                          for t in res:
+                              prog = int(t.get('progress', 0) * 100)
+                              speed_mb = t.get('dlspeed', 0) / (1024 * 1024)
+                              eta_str = fmt_eta(t.get('eta', -1))
+                              print(f"📥 Torrent: {t['name']} | {prog}% | Speed: {speed_mb:.2f} MB/s | ETA: {eta_str}")
+                              
+                              if prog >= 100:
+                                  c_key = get_clean_movie_key(t['name'])
+                                  if c_key and c_key not in completed_movie_keys:
+                                      completed_movie_keys.add(c_key)
+                                      dupes_to_delete = []
+                                      for other_t in res:
+                                          if other_t['hash'] != t['hash']:
+                                              other_key = get_clean_movie_key(other_t['name'])
+                                              if other_key == c_key:
+                                                  dupes_to_delete.append(other_t['hash'])
+                                      if dupes_to_delete:
+                                          print(f"🗑️ [Duplicate Cleaner] '{t['name']}' finished! Removing {len(dupes_to_delete)} duplicate torrent(s)...", flush=True)
+                                          requests.post('http://127.0.0.1:8080/api/v2/torrents/delete', data={
+                                              'hashes': '|'.join(dupes_to_delete),
+                                              'deleteFiles': 'true'
+                                          })
+
+                              if prog < 100: all_done = False
+
+                      if wget_active:
+                          all_done = False
+
+                  print("="*50 + "\n")
+                  if all_done: break
+              except Exception: pass
+              time.sleep(20)
+          EOF
+
+          pkill qbittorrent-nox || true
+          sleep 2
+
+      - name: Smart Zipping & Splitting
+        run: |
+          python3 -u - << 'EOF'
+          import os, shutil, subprocess, re
+          from collections import defaultdict
+          from natsort import natsorted
+
+          folder = os.environ.get("FOLDER_PATH", "downloaded_files")
+          video_ext = ('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v')
+          media_ext = video_ext + ('.srt', '.ass', '.vtt', '.sub')
+          max_bytes = 10000 * 1024 * 1024
+
+          def get_dir_size(p):
+              return sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fn in os.walk(p) for f in fn)
+
+          def create_7z_group(group_name, file_paths, base_dir, max_bytes_limit):
+              group_dir = os.path.join(base_dir, group_name)
+              os.makedirs(group_dir, exist_ok=True)
+              
+              files_to_move = list(file_paths)
+              for p in file_paths:
+                  base_stem = os.path.splitext(p)[0]
+                  for sub_ext in ('.srt', '.ass', '.vtt', '.sub'):
+                      sub_file = base_stem + sub_ext
+                      if os.path.exists(sub_file) and sub_file not in files_to_move:
+                          files_to_move.append(sub_file)
+
+              for p in files_to_move:
+                  dst = os.path.join(group_dir, os.path.basename(p))
+                  if p != dst and not os.path.exists(dst):
+                      shutil.move(p, dst)
+              
+              folder_size = get_dir_size(group_dir)
+              zip_name = f"{group_name}.zip"
+              orig = os.getcwd()
+              os.chdir(base_dir)
+              cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, group_name]
+              if folder_size > max_bytes_limit:
+                  cmd.insert(2, "-v4000m")
+              subprocess.run(cmd, check=True)
+              os.chdir(orig)
+              shutil.rmtree(group_dir)
+
+          if os.path.exists(folder):
+              for item in natsorted(os.listdir(folder)):
+                  item_path = os.path.join(folder, item)
+                  if os.path.isdir(item_path):
+                      vids = natsorted([
+                          os.path.join(r, f) for r, _, files in os.walk(item_path)
+                          for f in files if f.lower().endswith(video_ext)
+                      ])
+                      if len(vids) > 3:
+                          print(f"📦 Zipping folder: {item}")
+                          folder_size = get_dir_size(item_path)
+                          orig = os.getcwd()
+                          os.chdir(folder)
+                          zip_name = f"{item}.zip"
+                          cmd = ["7z", "a", "-mx0", "-mmt=on", zip_name, item]
+                          if folder_size > max_bytes:
+                              cmd.insert(2, "-v4000m")
+                          subprocess.run(cmd, check=True)
+                          os.chdir(orig)
+                          shutil.rmtree(item_path)
+
+          all_videos = []
+          for r, _, files in os.walk(folder):
+              for f in files:
+                  if f.lower().endswith(video_ext):
+                      all_videos.append(os.path.join(r, f))
+
+          all_videos = natsorted(all_videos)
+
+          series_regex = re.compile(r'(?i)(?:^(.*?)[.\s_-]+)?S(\d{1,2})(?:[EX\-]|\b)')
+          
+          series_groups = defaultdict(list)
+          unmatched_videos = []
+
+          for vid_path in all_videos:
+              vid_name = os.path.basename(vid_path)
+              parent_name = os.path.basename(os.path.dirname(vid_path))
+              match = series_regex.search(vid_name) or series_regex.search(parent_name)
+              
+              if match:
+                  raw_title = match.group(1) or "Season"
+                  s_num = match.group(2)
+                  clean_title = re.sub(r"['’]", "", raw_title)
+                  clean_title = re.sub(r"[\W_]+", " ", clean_title).strip().lower()
+                  group_key = f"{clean_title}_S{s_num}"
+                  series_groups[group_key].append(vid_path)
+              else:
+                  unmatched_videos.append(vid_path)
+
+          for group_key in natsorted(series_groups.keys()):
+              vids = natsorted(series_groups[group_key])
+              if len(vids) > 3:
+                  first_stem = os.path.splitext(os.path.basename(vids[0]))[0]
+                  create_7z_group(first_stem, vids, folder, max_bytes)
+
+          for r, dirs, files in os.walk(folder, topdown=False):
+              if r == folder: continue
+              for f in natsorted(files):
+                  if f.lower().endswith(media_ext):
+                      src = os.path.join(r, f)
+                      dst = os.path.join(folder, f)
+                      if not os.path.exists(dst): 
+                          shutil.move(src, dst)
+              shutil.rmtree(r, ignore_errors=True)
+          EOF
 
       - name: Upload to Filester
         run: |
@@ -43,7 +289,7 @@ jobs:
           def upload_single_file(file_path):
               filename = os.path.basename(file_path)
               file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
-              print(f"⬆ [START] Uploading: {filename} ({file_size_mb:.2f} MB)", flush=True)
+              print(f"⬆ [START] Uploading to Filester: {filename} ({file_size_mb:.2f} MB)", flush=True)
               
               curl_cmd = [
                   "curl", "-s", "-S", "-X", "POST",
@@ -71,7 +317,7 @@ jobs:
               
               full_output = " ".join(output_lines)
               if process.returncode == 0:
-                  print(f"✅ Finished uploading {filename}: {full_output}", flush=True)
+                  print(f"✅ Finished uploading {filename} to Filester: {full_output}", flush=True)
               else:
                   print(f"❌ Curl Error uploading {filename}: {full_output}", flush=True)
 
@@ -85,7 +331,7 @@ jobs:
               upload_queue = natsorted(upload_queue)
               
               if upload_queue:
-                  print(f"🚀 Launching parallel upload workers for {len(upload_queue)} files...", flush=True)
+                  print(f"🚀 Launching 4 parallel upload workers for {len(upload_queue)} files on Filester...", flush=True)
                   with ThreadPoolExecutor(max_workers=4) as executor:
                       executor.map(upload_single_file, upload_queue)
           EOF
