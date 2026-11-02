@@ -349,7 +349,7 @@ jobs:
           from concurrent.futures import ThreadPoolExecutor
           from natsort import natsorted
 
-          FILESTER_API_TOKEN = os.environ.get('FILESTER_API_TOKEN', '9QQH-DGES-CWQZ-FXNV')
+          FILESTER_API_TOKEN = os.environ.get('FILESTER_API_TOKEN', 'BzPI0ovKXlA7aPM1DXYdbm6MQFAI9rbC')
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloads')
           UPLOAD_URL = "https://u1.filester.me/api/v1/upload"
 
