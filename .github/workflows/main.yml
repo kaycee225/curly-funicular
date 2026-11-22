@@ -1,4 +1,4 @@
-name: Download Torrent and Upload to Filemirage
+name: Download Failed Psych Episodes and Upload to Filemirage
 
 on:
   workflow_dispatch:
@@ -133,12 +133,11 @@ jobs:
           sleep 3
           curl -s http://127.0.0.1:8080/api/v2/app/version && echo " ✅ qBittorrent daemon ready."
 
-      - name: Download Only Target Psych Episodes via qbittorrent-nox
+      - name: Download Only Failed Psych Episodes via qbittorrent-nox
         run: |
-          echo "🚀 Downloading only the 9 target Psych episodes via qbittorrent-nox..."
+          echo "🚀 Downloading only the 5 failed Psych episodes via qbittorrent-nox..."
           python3 -u - << 'EOF'
           import os
-          import re
           import glob
           import time
           import requests
@@ -152,15 +151,11 @@ jobs:
           LINK_URL = os.getenv("LINK_URL", "https://utfdtjcnbprlhkhsdovt.supabase.co/functions/v1/download-page/d4905cfd-0c2a-446e-bf78-05c3ee7a49fe")
 
           TARGET_FILES = {
-              "Psych (2006) - S01E04 - Woman Seeking Dead Husband - Smokers Okay, No Pets (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S01E11 - He Loves Me, He Loves Me Not, He Loves Me, Oops He's Dead (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E06 - Meat is Murder, But Murder is Also Murder (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E07 - If You're So Smart, Then Why Are You Dead (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E13 - Lights, Camera ... Homicidio (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E11 - Lassie Did a Bad, Bad Thing (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E12 - Earth, Wind and...Wait for It (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E13 - Any Given Friday Night at 10PM, 9PM Central (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S04E15 - The Head, the Tail, the Whole Damn Episode (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S05E09 - One, Maybe Two, Ways Out (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E04 - The Amazing Psych-Man & Tap Man, Issue #2 (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E06 - Shawn, Interrupted (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E10 - Indiana Shawn and the Temple of the Kinda Crappy, Rusty Old Dagger (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S08E01 - Lock, Stock, Some Smoking Barrels (1080p AMZN WEB-DL x265 MONOLITH).mkv",
           }
 
           processed_links = set()
@@ -262,7 +257,7 @@ jobs:
                           skip_indices.append(str(idx))
 
                   if not keep_indices:
-                      print(f"ℹ️ [{torrent_name[:35]}] None of the 9 target files found; skipping torrent.", flush=True)
+                      print(f"ℹ️ [{torrent_name[:35]}] None of the 5 target files found; skipping torrent.", flush=True)
                       requests.post(f"{QBIT_API}/torrents/delete", data={'hashes': t_hash, 'deleteFiles': 'true'}, timeout=10)
                       return True
 
@@ -421,7 +416,7 @@ jobs:
               main()
           EOF
 
-      - name: Upload Target Psych Episodes to Filemirage
+      - name: Upload Failed Psych Episodes to Filemirage
         run: |
           python3 -u - << 'EOF'
           import os
@@ -435,15 +430,11 @@ jobs:
           FOLDER_PATH = os.environ.get('FOLDER_PATH', 'downloads')
 
           TARGET_FILES = {
-              "Psych (2006) - S01E04 - Woman Seeking Dead Husband - Smokers Okay, No Pets (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S01E11 - He Loves Me, He Loves Me Not, He Loves Me, Oops He's Dead (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E06 - Meat is Murder, But Murder is Also Murder (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E07 - If You're So Smart, Then Why Are You Dead (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S02E13 - Lights, Camera ... Homicidio (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E11 - Lassie Did a Bad, Bad Thing (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E12 - Earth, Wind and...Wait for It (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S03E13 - Any Given Friday Night at 10PM, 9PM Central (1080p AMZN WEB-DL x265 MONOLITH).mkv",
-              "Psych (2006) - S04E15 - The Head, the Tail, the Whole Damn Episode (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S05E09 - One, Maybe Two, Ways Out (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E04 - The Amazing Psych-Man & Tap Man, Issue #2 (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E06 - Shawn, Interrupted (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S06E10 - Indiana Shawn and the Temple of the Kinda Crappy, Rusty Old Dagger (1080p AMZN WEB-DL x265 MONOLITH).mkv",
+              "Psych (2006) - S08E01 - Lock, Stock, Some Smoking Barrels (1080p AMZN WEB-DL x265 MONOLITH).mkv",
           }
 
           if not os.path.exists(FOLDER_PATH):
